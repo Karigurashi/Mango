@@ -34,3 +34,6 @@ build/
 # Environment
 .env
 .env.*
+
+# Agent context engine runtime cache (LOD 3 external store)
+.contex/

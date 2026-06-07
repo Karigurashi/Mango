@@ -1,0 +1,58 @@
+{
+  "kbName": "AI Agent 框架研究",
+  "createdAt": "2026-05-31T15:37:17.808858",
+  "lastCompiled": "2026-05-31T16:14:53.175153",
+  "totalConcepts": 24,
+  "totalArticles": 0,
+  "processedFiles": {
+    "raw/agent-architectures-2025.md": {
+      "compiledAt": "2026-05-31T15:56:46.186359",
+      "hash": "1ff5be569ea0de9bbff494cb3d0aba5a",
+      "compiled": true,
+      "conceptsExtracted": 8
+    },
+    "raw/agent-design-patterns-2026.md": {
+      "compiledAt": "2026-05-31T16:00:15.859713",
+      "hash": "f3d66a59003073008fd2d838d9800a96",
+      "compiled": true,
+      "conceptsExtracted": 7
+    },
+    "raw/agent-memory-2026.md": {
+      "compiledAt": "2026-05-31T16:01:19.638233",
+      "hash": "b68669fac8618adf8d876ad2197fe2d2",
+      "compiled": true,
+      "conceptsExtracted": 1
+    },
+    "raw/agent-planning.md": {
+      "compiledAt": "2026-05-31T16:04:15.964170",
+      "hash": "b3b16cfbb07da7bfc9ab0dca16e8fb96",
+      "compiled": true,
+      "conceptsExtracted": 6
+    },
+    "raw/langgraph-multi-agent-2026.md": {
+      "compiledAt": "2026-05-31T16:10:08.158987",
+      "hash": "fc84f6c2e1b42970b57bd85f836e7e34",
+      "compiled": true,
+      "conceptsExtracted": 6
+    },
+    "raw/mcp-protocol.md": {
+      "compiledAt": "2026-05-31T16:11:04.844461",
+      "hash": "684cf2fc34ca672d86230b7161f67d28",
+      "compiled": true,
+      "conceptsExtracted": 1
+    },
+    "raw/openclaw-architecture.md": {
+      "compiledAt": "2026-05-31T16:13:15.076618",
+      "hash": "fb8701604710fdd927c1201d06bbeeef",
+      "compiled": true,
+      "conceptsExtracted": 4
+    },
+    "raw/claude-agent-sdk-2026.md": {
+      "compiledAt": "2026-05-31T16:14:53.173178",
+      "hash": "954b338ae66fc38499294272d7ec2fa3",
+      "compiled": true,
+      "conceptsExtracted": 24
+    }
+  },
+  "compileLog": []
+}

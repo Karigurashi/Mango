@@ -1,0 +1,56 @@
+{
+  "name": "Workflow",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Action/BeginPlay",
+      "x": 29,
+      "y": 39
+    },
+    {
+      "id": 2,
+      "type": "Action/LLMClientCall",
+      "x": -48,
+      "y": 201,
+      "name": "计算",
+      "config": {
+        "SystemPrompt": "你是一个数学助手，回答要简洁准确。",
+        "UserMessage": "1+1等于几？请直接回答。"
+      }
+    },
+    {
+      "id": 3,
+      "type": "Action/LLMClientCall",
+      "x": 64,
+      "y": 356,
+      "name": "天气",
+      "config": {
+        "SystemPrompt": "你是一个天气助手，用中文简洁回答。",
+        "UserMessage": "今天天气怎么样？"
+      }
+    },
+    {
+      "id": 4,
+      "type": "Action/Delay",
+      "x": 209,
+      "y": 201,
+      "config": {
+        "Duration": 2
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": 1,
+      "to": 2
+    },
+    {
+      "from": 2,
+      "to": 4
+    },
+    {
+      "from": 4,
+      "to": 3
+    }
+  ]
+}

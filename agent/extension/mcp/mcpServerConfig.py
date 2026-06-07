@@ -1,0 +1,140 @@
+"""MCP Server 配置对象 —— 封装单个 MCP Server 的连接信息。
+
+对标 Claude Code 的 .mcp.json 配置项和 claude mcp add 命令参数。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .eMcpTransport import EMcpTransport
+
+
+class McpServerConfig:
+    """单个 MCP Server 的静态配置，包含传输方式、连接参数和作用域。
+
+    Attributes:
+        name: Server 名称（唯一标识）。
+        transport: 传输协议。
+        command: stdio 模式下的启动命令（如 ``"npx"``）。
+        args: stdio 模式下的命令参数列表。
+        url: http/sse 模式下的服务 URL。
+        env: 环境变量字典（支持 ``${VAR}`` 占位符）。
+        scope: 作用域（``"local"`` / ``"project"`` / ``"user"``），对标 Claude Code。
+        enabled: 是否启用。
+    """
+
+    def __init__(
+        self,
+        name: str,
+        transport: EMcpTransport = EMcpTransport.STDIO,
+        command: str = "",
+        args: list[str] | None = None,
+        url: str = "",
+        env: dict[str, str] | None = None,
+        scope: str = "local",
+        enabled: bool = True,
+    ) -> None:
+        self.name = name
+        self.transport = transport
+        self.command = command
+        self.args = args or []
+        self.url = url
+        self.env = env or {}
+        self.scope = scope
+        self.enabled = enabled
+
+    # ---- 序列化 ----
+
+    def ToDict(self) -> dict[str, Any]:
+        """导出为 .mcp.json 兼容的字典格式。"""
+        result: dict[str, Any] = {
+            "name": self.name,
+            "type": self.transport.value,
+            "scope": self.scope,
+            "enabled": self.enabled,
+        }
+        if self.transport == EMcpTransport.STDIO:
+            if self.command:
+                result["command"] = self.command
+            if self.args:
+                result["args"] = self.args
+            if self.env:
+                result["env"] = self.env
+        elif self.transport in (EMcpTransport.HTTP, EMcpTransport.SSE):
+            if self.url:
+                result["url"] = self.url
+            if self.env:
+                result["env"] = self.env
+        return result
+
+    @staticmethod
+    def FromDict(data: dict[str, Any]) -> "McpServerConfig":
+        """从字典反序列化（兼容 .mcp.json 格式）。"""
+        transportRaw = data.get("type", data.get("transport", "stdio"))
+        try:
+            transport = EMcpTransport(transportRaw)
+        except ValueError:
+            transport = EMcpTransport.STDIO
+
+        return McpServerConfig(
+            name=data.get("name", ""),
+            transport=transport,
+            command=data.get("command", ""),
+            args=data.get("args", []),
+            url=data.get("url", ""),
+            env=data.get("env", {}),
+            scope=data.get("scope", "local"),
+            enabled=data.get("enabled", True),
+        )
+
+    # ---- 工具方法 ----
+
+    def GetLaunchCommand(self) -> list[str] | None:
+        """获取 stdio 模式下的完整启动命令。
+
+        Returns:
+            ``[command] + args`` 列表，非 stdio 模式返回 None。
+        """
+        if self.transport != EMcpTransport.STDIO:
+            return None
+        if not self.command:
+            return None
+        return [self.command] + self.args
+
+    def ResolveEnv(self) -> dict[str, str]:
+        """解析环境变量中的 ``${VAR}`` 占位符。
+
+        从系统环境中读取实际值替换，占位符无对应值时保留原样。
+        """
+        import os
+        import re
+
+        resolved = {}
+        pattern = re.compile(r"\$\{(\w+)\}")
+        for key, value in self.env.items():
+            def _replace(m: re.Match) -> str:
+                return os.environ.get(m.group(1), m.group(0))
+            resolved[key] = pattern.sub(_replace, value)
+        return resolved
+
+    def IsStdio(self) -> bool:
+        """是否为 stdio 传输。"""
+        return self.transport == EMcpTransport.STDIO
+
+    def IsRemote(self) -> bool:
+        """是否为远程传输（http 或 sse）。"""
+        return self.transport in (EMcpTransport.HTTP, EMcpTransport.SSE)
+
+    # ---- 魔法方法 ----
+
+    def __repr__(self) -> str:
+        detail = ""
+        if self.transport == EMcpTransport.STDIO:
+            detail = f"command={self.command!r}"
+        else:
+            detail = f"url={self.url!r}"
+        return (
+            f"McpServerConfig(name={self.name!r}, transport={self.transport.value}, "
+            f"{detail}, scope={self.scope!r}, enabled={self.enabled})"
+        )

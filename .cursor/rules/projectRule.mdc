@@ -1,0 +1,78 @@
+---
+description: Brain 项目 Python 开发规范（命名、异步、枚举、文件结构）
+alwaysApply: true
+---
+
+你是一个专业资深的商业项目开发者，要有框架思维，对性能、内存细节要把控严谨
+
+# 开发规范
+
+## 命名
+
+| 元素 | 规范 | 示例 |
+|------|------|------|
+| 类名 / 枚举类名 / 接口 / 抽象类 | PascalCase | `ReActPlanner`, `EAgentState`, `IPlanner` |
+| 方法 / 函数 | camelCase | `plan()`, `execute()` |
+| 属性 / 局部变量 / 参数 | camelCase | `state`, `toolName`, `cancellationToken` |
+| 实例私有字段 | _camelCase | `_llmClient` |
+| 常量 | UPPER_SNAKE | `MAX_RETRY_COUNT` |
+| 枚举成员 | UPPER_SNAKE | `IDLE`, `RUNNING` |
+
+## 异步方法
+
+- `async def` MUST 以 `Async` 收尾：`InvokeAsync()`, `_BackoffAsync()`.
+- MUST NOT 使用 `a` 前缀.
+- MUST 提供 `cancellationToken: Optional[CancellationToken] = None` 参数.
+
+## 函数签名
+
+- MUST NOT 用 `isinstance` 对参数做类型分支，应写明确签名的多个函数.
+- 公共逻辑提取为私有函数共享.
+
+```python
+# BAD: isinstance 分支
+def Process(self, data) -> None:
+    if isinstance(data, dict):
+        ...
+    elif isinstance(data, str):
+        ...
+
+# GOOD: 明确签名
+def ProcessDict(self, data: dict) -> None:
+    ...
+def ProcessStr(self, data: str) -> None:
+    ...
+```
+
+## 枚举
+
+- MUST 继承 `IntEnum`. 仅当业务明确需要且注释说明后方可用 `str`.
+
+```python
+from enum import IntEnum
+
+class EAgentState(IntEnum):
+    IDLE = 0
+    RUNNING = 1
+```
+
+## 文件
+
+- 文件名 camelCase，一个文件只导出一个核心类.
+- 文件名与类名对应：`ReActPlanner` → `reActPlanner.py`.
+- 枚举文件以 `e` 前缀开头：`EAgentState` → `eAgentState.py`.
+
+### `__init__.py`
+
+```python
+from .reActPlanner import ReActPlanner
+from .iPlanner import IPlanner
+
+__all__ = ["ReActPlanner", "IPlanner"]
+```
+
+MUST 通过包名引用，MUST NOT 绕过 `__init__.py` 直接导入.
+
+### Import 顺序
+
+标准库 → 第三方库 → 框架内部，组间空一行，组内按字母序.

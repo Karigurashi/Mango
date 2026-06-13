@@ -16,6 +16,7 @@ from ..baseProvider import BaseProvider
 from ..chatMessage import ChatChunk, ChatMessage, ChatResponse, TokenUsage, ToolSpec
 from common.cancellationToken import CancellationToken
 from ...llmConfig import LLMModel
+from ...llmRequestParams import LLMRequestParams
 from .openaiProtocol import OpenAIProtocol
 
 
@@ -48,11 +49,6 @@ class OpenAIProvider(BaseProvider):
     async def CloseAsync(self) -> None:
         await self._asyncClient.close()
 
-    # ---- 工具绑定 ----
-
-    def BindTools(self, tools: list[ToolSpec]) -> None:
-        self._tools = tools
-
     # ---- TokenUsage 提取 ----
 
     @staticmethod
@@ -79,21 +75,21 @@ class OpenAIProvider(BaseProvider):
     def Invoke(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> ChatResponse:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        rp = requestParams or LLMRequestParams.DEFAULT
+
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=False,
-                tools=getattr(self, "_tools", None),
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=False,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             resp = self._client.chat.completions.create(**params)
 
@@ -115,13 +111,13 @@ class OpenAIProvider(BaseProvider):
             self._AccumulateUsage(usage)
             self._LogSuccess(rid, "Invoke", t0, usage)
 
-            if self._onAfterRequest:
-                self._onAfterRequest(result)
+            if rp.onAfterRequest:
+                rp.onAfterRequest(result)
 
             return result
         except Exception as exc:
             self._LogError(rid, "Invoke", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
     #  同步 Stream
@@ -130,21 +126,21 @@ class OpenAIProvider(BaseProvider):
     def Stream(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> Iterator[ChatChunk]:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        rp = requestParams or LLMRequestParams.DEFAULT
+
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=True,
-                tools=getattr(self, "_tools", None),
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=True,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             stream = self._client.chat.completions.create(**params)
 
@@ -177,7 +173,7 @@ class OpenAIProvider(BaseProvider):
             self._LogSuccess(rid, "Stream", t0, self._totalUsage)
         except Exception as exc:
             self._LogError(rid, "Stream", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
     #  异步 InvokeAsync
@@ -186,24 +182,24 @@ class OpenAIProvider(BaseProvider):
     async def InvokeAsync(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
         cancellationToken: Optional[CancellationToken] = None,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> ChatResponse:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
+        rp = requestParams or LLMRequestParams.DEFAULT
+
         self._CheckCancellation(cancellationToken)
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=False,
-                tools=getattr(self, "_tools", None),
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=False,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             resp = await self._InvokeWithTimeoutAsync(
                 self._asyncClient.chat.completions.create(**params),
@@ -227,8 +223,8 @@ class OpenAIProvider(BaseProvider):
             self._AccumulateUsage(usage)
             self._LogSuccess(rid, "InvokeAsync", t0, usage)
 
-            if self._onAfterRequest:
-                self._onAfterRequest(result)
+            if rp.onAfterRequest:
+                rp.onAfterRequest(result)
 
             return result
         except asyncio.CancelledError:
@@ -236,7 +232,7 @@ class OpenAIProvider(BaseProvider):
             raise
         except Exception as exc:
             self._LogError(rid, "InvokeAsync", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
     #  异步 StreamAsync
@@ -245,27 +241,27 @@ class OpenAIProvider(BaseProvider):
     async def StreamAsync(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
         cancellationToken: Optional[CancellationToken] = None,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> AsyncIterator[ChatChunk]:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
+        rp = requestParams or LLMRequestParams.DEFAULT
+
         self._CheckCancellation(cancellationToken)
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             stream = None
             cancelled = False
             try:
                 params = self._protocol.BuildRequestParams(
-                    messages, temperature, maxTokens, stream=True,
-                    tools=getattr(self, "_tools", None),
-                    _modelName=self._model.modelName, **kwargs,
+                    messages, rp, stream=True,
+                    tools=rp.tools,
+                    modelName=self._model.modelName,
                 )
                 stream = await self._asyncClient.chat.completions.create(**params)
 
@@ -311,4 +307,4 @@ class OpenAIProvider(BaseProvider):
             raise
         except Exception as exc:
             self._LogError(rid, "StreamAsync", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)

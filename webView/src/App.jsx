@@ -5,15 +5,16 @@ import NodePalette from './components/NodePalette';
 import RightPanel from './components/RightPanel';
 import Toolbar from './components/Toolbar';
 import { initNodeRegistry, isReady } from './nodes/nodeRegistry';
+import { jsonToFlow } from './utils/workflowIO';
+import defaultWorkflowJson from '../config/Workflow.json';
 
-const initialNodes = [];
-const initialEdges = [];
+const defaultWorkflow = jsonToFlow(defaultWorkflowJson);
 
 export default function App() {
-  const [nodes, setNodes] = useState(initialNodes);
-  const [edges, setEdges] = useState(initialEdges);
-  const [name, setName] = useState('');
-  const [variables, setVariables] = useState({});
+  const [nodes, setNodes] = useState(defaultWorkflow.nodes);
+  const [edges, setEdges] = useState(defaultWorkflow.edges);
+  const [name, setName] = useState(defaultWorkflow.name);
+  const [variables, setVariables] = useState(defaultWorkflow.variables);
   const [selectedNode, setSelectedNode] = useState(null);
   const [ready, setReady] = useState(isReady());
 
@@ -31,7 +32,32 @@ export default function App() {
   const startWidthRef = useRef(340);
 
   useEffect(() => {
-    initNodeRegistry().then(() => setReady(true));
+    let cancelled = false;
+    let retries = 0;
+    const maxRetries = 5;
+    const retryDelay = 1000; // ms
+
+    const tryInit = async () => {
+      while (retries < maxRetries) {
+        try {
+          await initNodeRegistry();
+          if (!cancelled) setReady(true);
+          return;
+        } catch (err) {
+          retries++;
+          if (retries >= maxRetries) {
+            console.error('节点注册表加载失败（已达最大重试次数）:', err);
+            if (!cancelled) setReady(true); // 即使失败也进入界面，用空注册表
+            return;
+          }
+          console.warn(`节点注册表加载失败，${retryDelay / 1000}s 后重试 (${retries}/${maxRetries})...`, err);
+          await new Promise((r) => setTimeout(r, retryDelay));
+        }
+      }
+    };
+
+    tryInit();
+    return () => { cancelled = true; };
   }, []);
 
   // 右面板拖拽 resize 逻辑

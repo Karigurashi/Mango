@@ -4,7 +4,7 @@
 - CancellationToken 取消机制
 - asyncio.wait_for 超时包装（双重保险）
 - asyncio.CancelledError 清理处理
-- 回调钩子、Token 累计、结构化日志。
+- Token 累计、结构化日志。
 """
 
 from __future__ import annotations
@@ -20,9 +20,8 @@ from common.logger import Logger
 
 from ..baseLLM import BaseLLM
 from common.cancellationToken import CancellationToken
-from ..eTier import ETier
 from ..llmConfig import LLMModel
-from .chatMessage import ChatMessage, ChatResponse, TokenUsage
+from .chatMessage import TokenUsage
 
 
 class BaseProvider(BaseLLM):
@@ -38,11 +37,6 @@ class BaseProvider(BaseLLM):
         # 累计用量
         self._totalUsage = TokenUsage()
 
-        # 回调钩子
-        self._onBeforeRequest: Optional[Callable[[list[ChatMessage]], None]] = None
-        self._onAfterRequest: Optional[Callable[[ChatResponse], None]] = None
-        self._onError: Optional[Callable[[Exception], None]] = None
-
     # ———— 元信息 ————
     @property
     @abstractmethod
@@ -54,10 +48,6 @@ class BaseProvider(BaseLLM):
     def ModelName(self) -> str:
         return self._model.modelName
 
-    @property
-    def Tier(self) -> ETier:
-        return self._model.tier
-
     # ———— 资源清理 ————
     def Close(self) -> None:
         """关闭底层 SDK 客户端（同步）。"""
@@ -66,16 +56,6 @@ class BaseProvider(BaseLLM):
     async def CloseAsync(self) -> None:
         """关闭底层 SDK 客户端（异步）。"""
         pass
-
-    # ———— 回调注册 ————
-    def OnBeforeRequest(self, callback: Callable[[list[ChatMessage]], None]) -> None:
-        self._onBeforeRequest = callback
-
-    def OnAfterRequest(self, callback: Callable[[ChatResponse], None]) -> None:
-        self._onAfterRequest = callback
-
-    def OnError(self, callback: Callable[[Exception], None]) -> None:
-        self._onError = callback
 
     # ———— Token 累计 ————
     @property
@@ -116,10 +96,18 @@ class BaseProvider(BaseLLM):
             dur, str(exc)[:200],
         )
 
-    def _RaiseLLMError(self, exc: Exception) -> None:
-        """统一转换为 LLMError。"""
-        if self._onError:
-            self._onError(exc)
+    def _RaiseLLMError(
+        self, exc: Exception,
+        onError: Optional[Callable[[Exception], None]] = None,
+    ) -> None:
+        """统一转换为 LLMError。
+
+        Args:
+            exc: 原始异常。
+            onError: 请求级异常回调（来自 LLMRequestParams.onError）。
+        """
+        if onError:
+            onError(exc)
         raise LLMError(
             str(exc),
             provider=self.ProviderName, model=self._model.modelName,

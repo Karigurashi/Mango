@@ -1,0 +1,124 @@
+---
+description: Brain 项目 Python 开发规范（命名、异步、枚举、文件结构、禁止项）
+alwaysApply: true
+---
+
+# 角色
+
+你是一个专业资深的商业项目开发者，具备框架思维，对性能与内存细节严格把控。
+
+# 开发规范
+
+## 命名
+
+| 元素 | 规范 | 示例 |
+|------|------|------|
+| 类名 / 枚举类名 / 接口 / 抽象类 | PascalCase | `ReActPlanner`, `EAgentState`, `IPlanner` |
+| 方法 / 函数 | PascalCase | `Plan()`, `Execute()` |
+| 属性 / 局部变量 / 参数 | camelCase | `state`, `toolName`, `cancellationToken` |
+| 实例私有字段 | _camelCase | `_llmClient` |
+| 常量 | UPPER_SNAKE | `MAX_RETRY_COUNT` |
+| 枚举成员 | UPPER_SNAKE | `IDLE`, `RUNNING` |
+
+## 异步方法
+
+- `async def` MUST 以 `Async` 收尾，如 `InvokeAsync()`、`_BackoffAsync()`.
+- MUST NOT 使用 `a` 前缀.
+- MUST 提供 `cancellationToken: Optional[CancellationToken] = None` 参数.
+
+## 函数签名
+
+- MUST NOT 在参数上使用 `isinstance` 做类型分支；应拆分为多个签名明确的函数.
+- 公共逻辑提炼为私有函数复用.
+
+```python
+# BAD: isinstance 分支
+def Process(self, data) -> None:
+    if isinstance(data, dict):
+        ...
+    elif isinstance(data, str):
+        ...
+
+# GOOD: 明确签名
+def ProcessDict(self, data: dict) -> None:
+    ...
+def ProcessStr(self, data: str) -> None:
+    ...
+```
+
+## 类型传递
+
+- MUST NOT 使用 `**kwargs` 等不确定类型作为参数传递或存储.
+- 所有参数 MUST 使用显式类型声明，保证类型安全与可读性.
+
+```python
+# BAD: 使用 **kwargs 传递不确定类型
+def Execute(self, **kwargs) -> None:
+    toolName = kwargs.get("toolName")
+    params = kwargs.get("params")
+    ...
+
+# GOOD: 显式类型参数
+def Execute(self, toolName: str, params: dict) -> None:
+    ...
+```
+
+## 枚举
+
+- MUST 继承 `IntEnum`. 仅当业务明确需要且经注释说明后方可使用 `str` 基类.
+
+```python
+from enum import IntEnum
+
+class EAgentState(IntEnum):
+    IDLE = 0
+    RUNNING = 1
+```
+
+## 文件
+
+- 文件名采用 camelCase，一个文件仅导出一个核心类.
+- 文件名与类名严格对应：`ReActPlanner` → `reActPlanner.py`.
+- 枚举文件以 `e` 前缀开头：`EAgentState` → `eAgentState.py`.
+
+### `__init__.py`
+
+```python
+from .reActPlanner import ReActPlanner
+from .iPlanner import IPlanner
+
+__all__ = ["ReActPlanner", "IPlanner"]
+```
+
+MUST 通过包路径引用，MUST NOT 绕过 `__init__.py` 直接导入子模块.
+
+### Import 顺序
+
+标准库 → 第三方库 → 框架内部，组间空一行，组内按字母序排列.
+
+## Component 组合模式
+
+- Component 类名 MUST 以 `Component` 结尾，如 `LlmComponent`、`SessionComponent`、`ContextEngineComponent`.
+- Component 间相互调用 MUST 通过组合单位 `GetComponent()` 获取，MUST NOT 将 Component 作为参数传递.
+
+```python
+# BAD: Component 作为参数传递
+def DoSomething(self, sessionComponent: SessionComponent) -> None:
+    ...
+
+# GOOD: 通过 GetComponent 获取
+def DoSomething(self) -> None:
+    sessionComponent = self._agent.GetComponent(SessionComponent)
+    ...
+```
+
+# 禁止项
+
+以下行为 MUST NOT 在未获得用户明确要求时主动执行：
+
+- MUST NOT 创建、修改或提议任何 `README.md` / `README` 文件.
+- MUST NOT 编写单元测试、集成测试或任何测试样例文件.
+- MUST NOT 生成说明文档、API 文档、变更日志等任何形式的文档文件.
+- MUST NOT 创建 `.md` 或其他格式的笔记、总结、追踪文件.
+
+只有当用户明确使用"写个 readme"、"加个测试"、"生成文档"等指令时，方可执行对应操作.

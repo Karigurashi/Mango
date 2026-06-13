@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from llm import LLMManager
 from common.cancellationToken import CancellationToken
 from llm.provider.chatMessage import ChatMessage
+from llm.llmRequestParams import LLMRequestParams
 from workflow import Workflow, WorkflowContext
 from workflow.core.eExecutionStatus import EExecutionStatus
 from workflow.core.eStreamEventType import EStreamEventType
@@ -78,9 +79,8 @@ async def list_models():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     """处理对话请求，调用 LLM 返回回复。"""
-    # 确定模型名并获取 LLMClient
-    modelName = req.modelName
-    client = LLMManager.GetClient(req.modelName or None)
+    # 确定模型名并获取 Provider
+    provider = LLMManager.GetProvider(req.modelName or None)
 
     # 构建消息
     messages = []
@@ -89,10 +89,12 @@ async def chat(req: ChatRequest):
     messages.append(ChatMessage.User(req.userMessage or "Hello"))
 
     # 调用
-    response = await client.InvokeAsync(
+    response = await provider.InvokeAsync(
         messages,
-        temperature=req.temperature,
-        maxTokens=req.maxTokens,
+        requestParams=LLMRequestParams(
+            temperature=req.temperature,
+            maxTokens=req.maxTokens,
+        ),
     )
 
     return ChatResponse(
@@ -117,8 +119,7 @@ async def chatStream(req: ChatRequest):
 
     事件类型 see: EStreamEventType 枚举
     """
-    modelName = req.modelName
-    client = LLMManager.GetClient(req.modelName or None)
+    provider = LLMManager.GetProvider(req.modelName or None)
 
     messages = []
     if req.systemPrompt:
@@ -129,10 +130,12 @@ async def chatStream(req: ChatRequest):
 
     async def generate():
         try:
-            async for chunk in client.StreamAsync(
+            async for chunk in provider.StreamAsync(
                 messages,
-                temperature=req.temperature,
-                maxTokens=req.maxTokens,
+                requestParams=LLMRequestParams(
+                    temperature=req.temperature,
+                    maxTokens=req.maxTokens,
+                ),
                 cancellationToken=cancellationToken,
             ):
                 if chunk.content:

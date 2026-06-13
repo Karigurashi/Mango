@@ -17,7 +17,7 @@ venv/
 Thumbs.db
 
 # Config with secrets
-worksapce/models.json
+workspace/
 
 # Python
 *.egg-info/

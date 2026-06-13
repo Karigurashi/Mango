@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from common.const import ERole
 
 from ..chatMessage import ChatMessage, ToolCall, ToolSpec
+from ...llmRequestParams import LLMRequestParams
 
 
 class AnthropicProtocol:
@@ -24,23 +25,67 @@ class AnthropicProtocol:
         messages: list[ChatMessage],
         enableCache: bool = False,
     ) -> tuple[list[str], list[dict]]:
-        """分离 system 消息并转换格式。
+        """分离 system 消息并转换格式，正确编码工具回合。
+
+        Anthropic 不接受 ``role="tool"``，且工具调用须以 content block 表达：
+        - assistant 发起调用 → ``tool_use`` block（与可选 text block 同一条消息）；
+        - 工具结果 → 归入紧随其后的 ``user`` 消息的 ``tool_result`` block，
+          多个连续工具结果（并行调用）合并到同一条 user 消息。
 
         Returns:
             (systemPrompts, chatMessages): system 文本列表 + 对话消息列表。
         """
         systemPrompts: list[str] = []
         chatMessages: list[dict] = []
+        pendingToolResults: list[dict] = []
+
+        def _FlushToolResults() -> None:
+            if pendingToolResults:
+                chatMessages.append({"role": "user", "content": list(pendingToolResults)})
+                pendingToolResults.clear()
+
         for m in messages:
             if m.role == ERole.SYSTEM:
                 systemPrompts.append(m.content)
+                continue
+
+            if m.role == ERole.TOOL:
+                pendingToolResults.append({
+                    "type": "tool_result",
+                    "tool_use_id": m.toolCallId,
+                    "content": m.content,
+                })
+                continue
+
+            # 非工具结果消息：先冲刷待合并的工具结果，保证顺序正确
+            _FlushToolResults()
+
+            if m.role == ERole.ASSISTANT and m.toolCalls:
+                d = AnthropicProtocol._BuildToolUseMessage(m)
             else:
                 d = m.ToAnthropic()
-                # KV-Cache 注入
-                if enableCache and m.cacheControl:
-                    d["cache_control"] = self.BuildCacheControl()
-                chatMessages.append(d)
+
+            if enableCache and m.cacheControl:
+                d = {**d, "cache_control": AnthropicProtocol.BuildCacheControl()}
+            chatMessages.append(d)
+
+        _FlushToolResults()
         return systemPrompts, chatMessages
+
+    @staticmethod
+    def _BuildToolUseMessage(message: ChatMessage) -> dict:
+        """将携带 toolCalls 的 assistant 消息转为 Anthropic tool_use content block。"""
+        blocks: list[dict] = []
+        if message.content:
+            blocks.append({"type": "text", "text": message.content})
+        for tc in message.toolCalls or []:
+            blocks.append({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.arguments,
+            })
+        return {"role": "assistant", "content": blocks}
 
     # ---- 工具格式 ----
 
@@ -83,20 +128,23 @@ class AnthropicProtocol:
     def BuildRequestParams(
         self,
         messages: list[ChatMessage],
-        temperature: float,
-        maxTokens: int,
+        requestParams: LLMRequestParams,
         stream: bool,
         tools: list[ToolSpec] | None = None,
-        enableThinking: bool = False,
-        thinkingBudget: int = 0,
-        enableCache: bool = False,
-        **kwargs,
+        modelName: str = "",
     ) -> dict:
         """聚合构建 Anthropic Messages API 请求参数。"""
+        temperature = requestParams.temperature
+        maxTokens = requestParams.maxTokens
+        enableThinking = requestParams.enableThinking
+        thinkingBudget = requestParams.thinkingBudget
+        enableCache = requestParams.enableCache
+        extraParams = requestParams.extraParams
+
         systemPrompts, chatMessages = self.FormatMessages(messages, enableCache)
 
         params: dict = {
-            "model": kwargs.pop("_modelName", ""),
+            "model": modelName,
             "messages": chatMessages,
             "max_tokens": maxTokens if maxTokens > 0 else 4096,
             "temperature": temperature,
@@ -111,5 +159,6 @@ class AnthropicProtocol:
             params["thinking"] = {"type": "enabled", "budget_tokens": thinkingBudget}
             params["temperature"] = 1
 
-        params.update(kwargs)
+        if extraParams:
+            params.update(extraParams)
         return params

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .eTier import ETier
-
 
 class LLMConfig:
     """models.json 文件的根类型。
@@ -41,7 +39,7 @@ class LLMModel:
     """单一 LLM 的连接与运行时配置。
 
     LLMModel 可直接由 CommonUtil.JsonDeserialize 从 JSON 反序列化，
-    tier 自动完成 string ↔ ETier 转换，多余字段会被忽略。
+    多余字段会被忽略。
 
     Attributes:
         name: 配置别名，用于在调度器中按名称查找。
@@ -53,10 +51,7 @@ class LLMModel:
         maxRetries: 最大重试次数（透传给 SDK）。
         streamTimeout: 流式请求总超时秒数（仅框架层 asyncio.wait_for，默认取 timeout * 2）。
         thinkingBudget: Anthropic Extended Thinking 预算 token 数。
-        tier: 模型能力档位，用于按需调度。
     """
-
-    _TIER_MAP: dict[str, ETier] = {"high": ETier.HIGH, "mid": ETier.MID, "low": ETier.LOW}
 
     def __init__(
         self,
@@ -69,7 +64,6 @@ class LLMModel:
         maxRetries: int = 2,
         streamTimeout: float = 0.0,
         thinkingBudget: int = 4000,
-        tier: ETier | str = ETier.MID,
         **kwargs: Any,
     ) -> None:
         self.name = name
@@ -81,17 +75,9 @@ class LLMModel:
         self.maxRetries = maxRetries
         self.streamTimeout = streamTimeout if streamTimeout > 0 else timeout * 2
         self.thinkingBudget = thinkingBudget
-        self.tier = self._NormalizeTier(tier)
-
-    @classmethod
-    def _NormalizeTier(cls, value: ETier | str) -> ETier:
-        """将 tier 统一为 ETier 枚举。"""
-        if isinstance(value, ETier):
-            return value
-        return cls._TIER_MAP.get(value, ETier.MID)
 
     def __repr__(self) -> str:
-        return f"LLMModel(name={self.name!r}, modelName={self.modelName!r}, tier={self.tier.value}, url={self.url!r})"
+        return f"LLMModel(name={self.name!r}, modelName={self.modelName!r}, url={self.url!r})"
 
     def ToDict(self) -> dict:
         return {
@@ -104,6 +90,5 @@ class LLMModel:
             "maxRetries": self.maxRetries,
             "streamTimeout": self.streamTimeout,
             "thinkingBudget": self.thinkingBudget,
-            "tier": self.tier.value,
         }
 

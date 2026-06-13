@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from ..chatMessage import ChatMessage, ToolCall, ToolSpec
+from ...llmRequestParams import LLMRequestParams
 
 
 class OpenAIProtocol:
@@ -66,17 +67,22 @@ class OpenAIProtocol:
     def BuildRequestParams(
         self,
         messages: list[ChatMessage],
-        temperature: float,
-        maxTokens: int,
+        requestParams: LLMRequestParams,
         stream: bool,
         tools: list[ToolSpec] | None = None,
-        **kwargs,
+        modelName: str = "",
     ) -> dict:
-        """聚合构建 OpenAI /chat/completions 请求参数。"""
-        kwargs.pop("enableThinking", None)
-        kwargs.pop("thinkingBudget", None)
+        """聚合构建 OpenAI /chat/completions 请求参数。
+
+        enableThinking / thinkingBudget / enableCache 当前为 OpenAI
+        兼容端点预留参数，协议层直接忽略。
+        """
+        temperature = requestParams.temperature
+        maxTokens = requestParams.maxTokens
+        extraParams = requestParams.extraParams
+
         params: dict = {
-            "model": kwargs.pop("_modelName", ""),
+            "model": modelName,
             "messages": self.FormatMessages(messages),
             "temperature": temperature,
             "stream": stream,
@@ -87,5 +93,6 @@ class OpenAIProtocol:
             params["stream_options"] = {"include_usage": True}
         if tools:
             params["tools"] = self.FormatTools(tools)
-        params.update(kwargs)
+        if extraParams:
+            params.update(extraParams)
         return params

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from typing import AsyncIterator, Iterator, Optional
 
 import anthropic
@@ -12,6 +13,7 @@ from ..baseProvider import BaseProvider
 from ..chatMessage import ChatChunk, ChatMessage, ChatResponse, TokenUsage, ToolSpec
 from common.cancellationToken import CancellationToken
 from ...llmConfig import LLMModel
+from ...llmRequestParams import LLMRequestParams
 from .anthropicProtocol import AnthropicProtocol
 
 
@@ -45,11 +47,6 @@ class AnthropicProvider(BaseProvider):
     async def CloseAsync(self) -> None:
         await self._asyncClient.close()
 
-    # ---- 工具绑定 ----
-
-    def BindTools(self, tools: list[ToolSpec]) -> None:
-        self._tools = tools
-
     # ---- TokenUsage 提取 ----
 
     @staticmethod
@@ -69,27 +66,24 @@ class AnthropicProvider(BaseProvider):
     def Invoke(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> ChatResponse:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
-        enableThinking = kwargs.pop("enableThinking", False)
-        thinkingBudget = kwargs.pop("thinkingBudget", 0) or self._thinkingBudget
-        enableCache = kwargs.pop("enableCache", False)
+        rp = requestParams or LLMRequestParams.DEFAULT
+        thinkingBudget = rp.thinkingBudget or self._thinkingBudget
+        if thinkingBudget != rp.thinkingBudget:
+            rp = replace(rp, thinkingBudget=thinkingBudget)
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=False,
-                tools=getattr(self, "_tools", None),
-                enableThinking=enableThinking, thinkingBudget=thinkingBudget,
-                enableCache=enableCache,
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=False,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             resp = self._client.messages.create(**params)
 
@@ -117,13 +111,13 @@ class AnthropicProvider(BaseProvider):
             self._AccumulateUsage(usage)
             self._LogSuccess(rid, "Invoke", t0, usage)
 
-            if self._onAfterRequest:
-                self._onAfterRequest(result)
+            if rp.onAfterRequest:
+                rp.onAfterRequest(result)
 
             return result
         except Exception as exc:
             self._LogError(rid, "Invoke", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
     #  同步 Stream
@@ -132,27 +126,24 @@ class AnthropicProvider(BaseProvider):
     def Stream(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> Iterator[ChatChunk]:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
-        enableThinking = kwargs.pop("enableThinking", False)
-        thinkingBudget = kwargs.pop("thinkingBudget", 0) or self._thinkingBudget
-        enableCache = kwargs.pop("enableCache", False)
+        rp = requestParams or LLMRequestParams.DEFAULT
+        thinkingBudget = rp.thinkingBudget or self._thinkingBudget
+        if thinkingBudget != rp.thinkingBudget:
+            rp = replace(rp, thinkingBudget=thinkingBudget)
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=True,
-                tools=getattr(self, "_tools", None),
-                enableThinking=enableThinking, thinkingBudget=thinkingBudget,
-                enableCache=enableCache,
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=True,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             with self._client.messages.stream(**params) as stream:
                 for event in stream:
@@ -181,7 +172,7 @@ class AnthropicProvider(BaseProvider):
             self._LogSuccess(rid, "Stream", t0)
         except Exception as exc:
             self._LogError(rid, "Stream", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
     #  异步 InvokeAsync
@@ -190,30 +181,27 @@ class AnthropicProvider(BaseProvider):
     async def InvokeAsync(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
         cancellationToken: Optional[CancellationToken] = None,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> ChatResponse:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
-        enableThinking = kwargs.pop("enableThinking", False)
-        thinkingBudget = kwargs.pop("thinkingBudget", 0) or self._thinkingBudget
-        enableCache = kwargs.pop("enableCache", False)
+        rp = requestParams or LLMRequestParams.DEFAULT
+        thinkingBudget = rp.thinkingBudget or self._thinkingBudget
+        if thinkingBudget != rp.thinkingBudget:
+            rp = replace(rp, thinkingBudget=thinkingBudget)
 
         self._CheckCancellation(cancellationToken)
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=False,
-                tools=getattr(self, "_tools", None),
-                enableThinking=enableThinking, thinkingBudget=thinkingBudget,
-                enableCache=enableCache,
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=False,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             resp = await self._InvokeWithTimeoutAsync(
                 self._asyncClient.messages.create(**params),
@@ -243,8 +231,8 @@ class AnthropicProvider(BaseProvider):
             self._AccumulateUsage(usage)
             self._LogSuccess(rid, "InvokeAsync", t0, usage)
 
-            if self._onAfterRequest:
-                self._onAfterRequest(result)
+            if rp.onAfterRequest:
+                rp.onAfterRequest(result)
 
             return result
         except asyncio.CancelledError:
@@ -252,7 +240,7 @@ class AnthropicProvider(BaseProvider):
             raise
         except Exception as exc:
             self._LogError(rid, "InvokeAsync", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
     #  异步 StreamAsync
@@ -261,30 +249,27 @@ class AnthropicProvider(BaseProvider):
     async def StreamAsync(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
         cancellationToken: Optional[CancellationToken] = None,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> AsyncIterator[ChatChunk]:
         rid = self._NewRequestId()
         t0 = time.monotonic()
 
-        enableThinking = kwargs.pop("enableThinking", False)
-        thinkingBudget = kwargs.pop("thinkingBudget", 0) or self._thinkingBudget
-        enableCache = kwargs.pop("enableCache", False)
+        rp = requestParams or LLMRequestParams.DEFAULT
+        thinkingBudget = rp.thinkingBudget or self._thinkingBudget
+        if thinkingBudget != rp.thinkingBudget:
+            rp = replace(rp, thinkingBudget=thinkingBudget)
 
         self._CheckCancellation(cancellationToken)
 
-        if self._onBeforeRequest:
-            self._onBeforeRequest(messages)
+        if rp.onBeforeRequest:
+            rp.onBeforeRequest(messages)
 
         try:
             params = self._protocol.BuildRequestParams(
-                messages, temperature, maxTokens, stream=True,
-                tools=getattr(self, "_tools", None),
-                enableThinking=enableThinking, thinkingBudget=thinkingBudget,
-                enableCache=enableCache,
-                _modelName=self._model.modelName, **kwargs,
+                messages, rp, stream=True,
+                tools=rp.tools,
+                modelName=self._model.modelName,
             )
             cancelled = False
             async with self._asyncClient.messages.stream(**params) as stream:
@@ -324,4 +309,4 @@ class AnthropicProvider(BaseProvider):
             raise
         except Exception as exc:
             self._LogError(rid, "StreamAsync", t0, exc)
-            self._RaiseLLMError(exc)
+            self._RaiseLLMError(exc, onError=rp.onError)

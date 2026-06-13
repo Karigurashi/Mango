@@ -3,6 +3,7 @@
 from common.const import ERole
 from llm import LLMManager
 from llm.provider.chatMessage import ChatMessage
+from llm.llmRequestParams import LLMRequestParams
 
 from ...core.baseNode import BaseNode, handler
 from ...core.eNodeCategory import ENodeCategory
@@ -77,7 +78,7 @@ class LLMClientCallNode(BaseNode):
         temperature = float(getattr(self, "Temperature", 0.7) or 0.7)
         enableThinking = bool(getattr(self, "EnableThinking", False))
 
-        client = LLMManager.GetClient(modelName)
+        provider = LLMManager.GetProvider(modelName)
 
         messages: list[ChatMessage] = []
         if systemPrompt:
@@ -85,18 +86,18 @@ class LLMClientCallNode(BaseNode):
         messages.extend(self._history)
 
         cancellationToken = self.context.CancellationToken
-        streamKwargs: dict = {"cancellationToken": cancellationToken}
-        if enableThinking:
-            streamKwargs["enableThinking"] = True
 
         fullContent = ""
         streamCallback = self.context.OnNodeStreamAsync
         nodeId = self.context.CurrentNodeId
         executionRound = self.context.ExecutionRound
-        async for chunk in client.StreamAsync(
+        async for chunk in provider.StreamAsync(
             messages,
-            temperature=temperature,
-            **streamKwargs,
+            cancellationToken=cancellationToken,
+            requestParams=LLMRequestParams(
+                temperature=temperature,
+                enableThinking=enableThinking,
+            ),
         ):
             if chunk.content:
                 fullContent += chunk.content

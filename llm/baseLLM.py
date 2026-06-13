@@ -10,6 +10,7 @@ from typing import AsyncIterator, Iterator, Optional
 
 from common.cancellationToken import CancellationToken
 from .provider.chatMessage import ChatChunk, ChatMessage, ChatResponse, TokenUsage, ToolSpec
+from .llmRequestParams import LLMRequestParams
 
 
 class BaseLLM(ABC):
@@ -43,9 +44,7 @@ class BaseLLM(ABC):
     def Invoke(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> ChatResponse:
         """同步非流式调用，返回完整响应。"""
         ...
@@ -54,9 +53,7 @@ class BaseLLM(ABC):
     def Stream(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> Iterator[ChatChunk]:
         """同步流式调用，逐块产出增量。"""
         ...
@@ -67,10 +64,8 @@ class BaseLLM(ABC):
     async def InvokeAsync(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
         cancellationToken: Optional[CancellationToken] = None,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> ChatResponse:
         """异步非流式调用，支持通过 CancellationToken 取消。"""
         ...
@@ -79,10 +74,8 @@ class BaseLLM(ABC):
     async def StreamAsync(
         self,
         messages: list[ChatMessage],
-        temperature: float = 0.7,
-        maxTokens: int = 0,
         cancellationToken: Optional[CancellationToken] = None,
-        **kwargs,
+        requestParams: Optional[LLMRequestParams] = None,
     ) -> AsyncIterator[ChatChunk]:
         """异步流式调用，支持通过 CancellationToken 在 chunk 间取消。"""
         ...
@@ -107,5 +100,17 @@ class BaseLLM(ABC):
 
     @property
     def TotalUsage(self) -> TokenUsage:
-        """累计 Token 用量，Provider 自行维护。"""
+        """累计 Token 用量。
+
+        默认返回空 TokenUsage()。Provider 子类（BaseProvider）应覆盖此属性，
+        维护 _totalUsage 字段并在每次调用后累加。
+        """
         return TokenUsage()
+
+    def ResetUsage(self) -> None:
+        """重置累计用量。
+
+        默认无操作。Provider 子类（BaseProvider）应覆盖此方法，
+        将 _totalUsage 重置为 TokenUsage()。
+        """
+        pass

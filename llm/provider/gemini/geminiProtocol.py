@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from common.const import ERole
 
 from ..chatMessage import ChatMessage, ToolCall, ToolSpec
+from ...llmRequestParams import LLMRequestParams
 
 
 class GeminiProtocol:
@@ -87,18 +88,25 @@ class GeminiProtocol:
     def BuildRequestParams(
         self,
         messages: list[ChatMessage],
-        temperature: float,
-        maxTokens: int,
+        requestParams: LLMRequestParams,
         stream: bool,
         tools: list[ToolSpec] | None = None,
-        **kwargs,
+        modelName: str = "",
     ) -> dict:
-        """聚合构建 Gemini generate_content 请求参数。"""
+        """聚合构建 Gemini generate_content 请求参数。
+
+        enableThinking / thinkingBudget / enableCache 当前为 Gemini
+        预留参数，协议层直接忽略。
+        """
+        temperature = requestParams.temperature
+        maxTokens = requestParams.maxTokens
+        extraParams = requestParams.extraParams
+
         contents = self.FormatMessages(messages)
         systemInstruction = self.GetSystemInstruction(messages)
 
         params: dict = {
-            "model": kwargs.pop("_modelName", ""),
+            "model": modelName,
             "contents": contents,
             "config": {},
         }
@@ -112,5 +120,6 @@ class GeminiProtocol:
             }]
         if systemInstruction:
             params["config"]["system_instruction"] = systemInstruction
-        params.update(kwargs)
+        if extraParams:
+            params.update(extraParams)
         return params

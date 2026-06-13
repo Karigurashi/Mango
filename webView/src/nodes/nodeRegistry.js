@@ -57,19 +57,24 @@ export async function initNodeRegistry() {
   if (_initPromise) return _initPromise;
 
   _initPromise = (async () => {
-    const resp = await fetch('/api/nodes');
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch node definitions: ${resp.status}`);
-    }
-    const data = await resp.json();
-    const nodes = data.nodes || [];
+    try {
+      const resp = await fetch('/api/nodes');
+      if (!resp.ok) {
+        throw new Error(`Failed to fetch node definitions: ${resp.status}`);
+      }
+      const data = await resp.json();
+      const nodes = data.nodes || [];
 
-    const map = {};
-    for (const def of nodes) {
-      map[def.nodeType] = def;
+      const map = {};
+      for (const def of nodes) {
+        map[def.nodeType] = def;
+      }
+      NODE_TYPES = map;
+      _initialized = true;
+    } catch (err) {
+      _initPromise = null;  // 失败时清除缓存，允许后续重试
+      throw err;
     }
-    NODE_TYPES = map;
-    _initialized = true;
   })();
 
   return _initPromise;

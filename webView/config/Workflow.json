@@ -1,0 +1,44 @@
+{
+  "name": "Workflow",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Action/BeginPlay",
+      "x": 151,
+      "y": 363
+    },
+    {
+      "id": 2,
+      "type": "Action/LLMClientCall",
+      "x": 383,
+      "y": 319,
+      "config": {
+        "SystemPrompt": "你是一个喷子，喜欢骂人",
+        "UserMessage": "我叫刘威！"
+      }
+    },
+    {
+      "id": 3,
+      "type": "Action/LLMClientCall",
+      "x": 382,
+      "y": 522,
+      "config": {
+        "SystemPrompt": "你是刘威，是一个喷子喜欢骂人"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": 1,
+      "to": 2
+    },
+    {
+      "from": 2,
+      "to": 3
+    },
+    {
+      "from": 3,
+      "to": 2
+    }
+  ]
+}

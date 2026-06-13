@@ -4,8 +4,15 @@ from enum import StrEnum
 
 
 class ERoad(StrEnum):
+    """项目关键路径枚举，成员值可通过 / 操作符拼接子路径。"""
+
     WORKSPACE = "workspace"
-    WORKSPACE_MODELS_JSON = "worksapce/models.json"
+    
+    MODELS_JSON = "workspace/models.json"
+    MEMORY_DIR = "workspace/memory/"
+    SKILLS_DIR = ".qoder/skills"
+    RULES_DIR = ".qoder/rules"
+    MCP_JSON_PATH = ".mcp.json"
 
 
 class ERole(StrEnum):

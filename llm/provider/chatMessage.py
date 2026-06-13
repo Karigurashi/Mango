@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -11,7 +13,7 @@ from common.const import ERole
 # ==================== Tool ====================
 
 
-@dataclass
+@dataclass(slots=True)
 class ToolSpec:
     """工具定义，用于描述可被模型调用的函数。
 
@@ -26,7 +28,7 @@ class ToolSpec:
     parameters: dict = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True)
 class ToolCall:
     """模型发起的工具调用。
 
@@ -44,7 +46,7 @@ class ToolCall:
 # ==================== 消息 ====================
 
 
-@dataclass
+@dataclass(slots=True)
 class ChatMessage:
     """单条对话消息，兼容 OpenAI / Anthropic / Gemini 格式。
 
@@ -62,26 +64,46 @@ class ChatMessage:
     toolCallId: str = ""
     cacheControl: bool = False
 
+    # ---- 协议缓存（惰性初始化，避免高频调用重复分配 dict）----
+    _cacheOpenAI: Optional[dict] = field(default=None, init=False, repr=False)
+    _cacheAnthropic: Optional[dict] = field(default=None, init=False, repr=False)
+
+    def InvalidateCache(self) -> None:
+        """清除协议缓存。当 role/content/toolCalls/toolCallId 被修改后必须调用。"""
+        self._cacheOpenAI = None
+        self._cacheAnthropic = None
+
     def ToOpenAI(self) -> dict:
+        if self._cacheOpenAI is not None:
+            return self._cacheOpenAI
         result: dict = {"role": self.role, "content": self.content}
         if self.toolCalls:
             result["tool_calls"] = [
                 {
                     "id": tc.id,
                     "type": "function",
-                    "function": {"name": tc.name, "arguments": str(tc.arguments)},
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                    },
                 }
                 for tc in self.toolCalls
             ]
         if self.toolCallId:
             result["tool_call_id"] = self.toolCallId
+        self._cacheOpenAI = result
         return result
 
     def ToAnthropic(self) -> dict:
-        result: dict = {"role": self.role, "content": self.content}
-        if self.cacheControl:
-            result["cache_control"] = {"type": "ephemeral"}
-        return result
+        """转为 Anthropic 消息格式。
+
+        注：cache_control 不由本方法注入，统一由 AnthropicProtocol.FormatMessages 处理，
+        确保缓存 dict 不含可变的外部注入字段。
+        """
+        if self._cacheAnthropic is not None:
+            return self._cacheAnthropic
+        self._cacheAnthropic = {"role": self.role, "content": self.content}
+        return self._cacheAnthropic
 
     @staticmethod
     def System(content: str) -> ChatMessage:
@@ -102,7 +124,7 @@ class ChatMessage:
 
 # ==================== Token 用量 ====================
 
-@dataclass
+@dataclass(slots=True)
 class TokenUsage:
     """单次调用的 Token 消耗统计。
 
@@ -126,7 +148,7 @@ class TokenUsage:
 
 # ==================== 完整响应 ====================
 
-@dataclass
+@dataclass(slots=True)
 class ChatResponse:
     """一次非流式调用的完整返回。
 
@@ -150,7 +172,7 @@ class ChatResponse:
 
 # ==================== 流式块 ====================
 
-@dataclass
+@dataclass(slots=True)
 class ChatChunk:
     """流式调用的单次增量产出。
 

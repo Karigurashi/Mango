@@ -8,6 +8,7 @@ Think → Act → Observe 循环。
 from __future__ import annotations
 
 import asyncio
+import time
 from io import StringIO
 
 from typing import AsyncIterator, Iterator, Optional
@@ -27,6 +28,7 @@ from agent.component.rule.ruleComponent import RuleComponent
 from agent.component.skill.skillComponent import SkillComponent
 from agent.component.mcp.mcpComponent import McpComponent
 from agent.component.tool.toolComponent import ToolComponent
+from agent.component.logging.loggingComponent import LoggingComponent
 
 from agent.component.data.agentConfig import AgentConfig
 from agent.component.data.dataComponent import DataComponent
@@ -71,6 +73,7 @@ class Agent(BaseAgent):
         self._mcpComp = self.AddComponent(McpComponent)
         self._toolComp = self.AddComponent(ToolComponent)
         self._harnessComp = self.AddComponent(HarnessComponent)
+        self._loggingComp = self.AddComponent(LoggingComponent)
 
         # ---- 统一初始化 ----
         self.InitAllComponents()
@@ -198,6 +201,11 @@ class Agent(BaseAgent):
         # ---- Ingest USER 消息 ----
         self._ctxComp.Ingest(ERole.USER, userMessage, lodLevel=EContextLodLevel.SUMMARIZABLE)
 
+        # ---- 结构化日志：Run 启动 ----
+        if self._loggingComp is not None:
+            self._loggingComp.LogRunStart(userMessage)
+        runStartTime = time.monotonic()
+
         # ---- ReAct 循环 ----
         for turn in range(self._dataComp.config.maxTurns):
             yield AgentStreamEvent.TurnStart(turn)
@@ -209,6 +217,8 @@ class Agent(BaseAgent):
             # LLM 调用（含指数退避重试）
             contentBuf = StringIO()
             toolCalls: list[ToolCall] | None = None
+            llmStartTime = time.monotonic()
+            lastChunkUsage = None
 
             try:
                 async for chunk in self._CallWithRetryAsync(
@@ -224,16 +234,46 @@ class Agent(BaseAgent):
                             toolCalls = []
                         toolCalls.extend(chunk.toolCalls)
 
+                    if chunk.usage is not None:
+                        lastChunkUsage = chunk.usage
+
             except Exception as exc:
+                llmDuration = time.monotonic() - llmStartTime
                 self._dataComp.state = EAgentState.ERROR
                 errorMsg = f"LLM call failed at turn {turn}: {exc}"
                 self._ctxComp.Ingest(ERole.ASSISTANT, f"[Error: {errorMsg}]", lodLevel=EContextLodLevel.DISCARDABLE)
+                if self._loggingComp is not None:
+                    self._loggingComp.LogLLMCall(
+                        turnIndex=turn, modelName=self._llmComponent.ModelName,
+                        inputTokens=0, outputTokens=0,
+                        duration=llmDuration, streaming=streaming, success=False,
+                    )
+                    self._loggingComp.LogRunEnd(
+                        totalTurns=turn, totalDuration=time.monotonic() - runStartTime,
+                        totalTokens=0, endState=EAgentState.ERROR.name,
+                    )
                 yield AgentStreamEvent.ErrorEvent(errorMsg, turn)
                 yield AgentStreamEvent.StateChange(EAgentState.ERROR, turn)
                 return
 
+            # ---- 结构化日志：LLM 调用完成 ----
+            llmDuration = time.monotonic() - llmStartTime
+            if self._loggingComp is not None:
+                inputTokens = lastChunkUsage.promptTokens if lastChunkUsage else 0
+                outputTokens = lastChunkUsage.completionTokens if lastChunkUsage else 0
+                self._loggingComp.LogLLMCall(
+                    turnIndex=turn, modelName=self._llmComponent.ModelName,
+                    inputTokens=inputTokens, outputTokens=outputTokens,
+                    duration=llmDuration, streaming=streaming, success=True,
+                )
+
             # 检查取消
             if cancellationToken is not None and cancellationToken.IsCancellationRequested:
+                if self._loggingComp is not None:
+                    self._loggingComp.LogRunEnd(
+                        totalTurns=turn, totalDuration=time.monotonic() - runStartTime,
+                        totalTokens=0, endState="CANCELLED",
+                    )
                 yield AgentStreamEvent.ErrorEvent("Cancelled by user", turn)
                 yield AgentStreamEvent.StateChange(EAgentState.ERROR, turn)
                 return
@@ -243,7 +283,18 @@ class Agent(BaseAgent):
                 self._dataComp.state = EAgentState.ACTING
                 yield AgentStreamEvent.StateChange(EAgentState.ACTING, turn)
 
+                toolStartTime = time.monotonic()
                 results = await self._toolComp.DispatchBatchAsync(toolCalls)
+                batchDuration = time.monotonic() - toolStartTime
+
+                # ---- 结构化日志：工具批量执行完成 ----
+                if self._loggingComp is not None:
+                    for tc, result in zip(toolCalls, results):
+                        self._loggingComp.LogToolExecution(
+                            turnIndex=turn, toolName=tc.name,
+                            duration=batchDuration, success=result.success,
+                            resultChars=len(result.ToLLMContent()) if result.ToLLMContent() else 0,
+                        )
 
                 # 先 Ingest 带 tool_calls 的 ASSISTANT 消息（LLM API 要求 ASSISTANT 在 TOOL 之前）
                 # 必须携带 toolCalls，否则后续 TOOL 消息会被 OpenAI 视为孤儿而拒绝
@@ -296,6 +347,12 @@ class Agent(BaseAgent):
             # maxTurns 耗尽 —— 视为异常终止
             errorMsg = f"Exceeded max turns ({self._dataComp.config.maxTurns})"
             self._dataComp.state = EAgentState.ERROR
+            if self._loggingComp is not None:
+                self._loggingComp.LogRunEnd(
+                    totalTurns=self._dataComp.config.maxTurns,
+                    totalDuration=time.monotonic() - runStartTime,
+                    totalTokens=0, endState=EAgentState.ERROR.name,
+                )
             yield AgentStreamEvent.ErrorEvent(errorMsg)
             yield AgentStreamEvent.StateChange(EAgentState.ERROR)
             yield AgentStreamEvent.Done()
@@ -306,6 +363,17 @@ class Agent(BaseAgent):
             await self._ctxComp.CompactAsync()
 
         self._dataComp.state = EAgentState.FINISHED
+
+        # ---- 结构化日志：Run 正常结束 ----
+        if self._loggingComp is not None:
+            sessionMetrics = self._loggingComp.GetSessionMetrics()
+            self._loggingComp.LogRunEnd(
+                totalTurns=sessionMetrics["totalTurns"],
+                totalDuration=time.monotonic() - runStartTime,
+                totalTokens=sessionMetrics["totalTokens"],
+                endState=EAgentState.FINISHED.name,
+            )
+
         yield AgentStreamEvent.StateChange(EAgentState.FINISHED)
         yield AgentStreamEvent.Done()
 

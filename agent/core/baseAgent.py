@@ -116,6 +116,10 @@ class BaseAgent:
             ctxComp = self.GetComponent(ContextComponent)
             if ctxComp is not None:
                 await ctxComp.AfterTurnAsync()
+            from agent.component.logging.loggingComponent import LoggingComponent
+            loggingComp = self.GetComponent(LoggingComponent)
+            if loggingComp is not None:
+                loggingComp.OnAfterTurnAsync()
             if not normalExit:
                 from agent.component.data.dataComponent import DataComponent
                 from agent.component.data.eAgentState import EAgentState

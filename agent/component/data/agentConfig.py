@@ -43,6 +43,13 @@ class AgentConfig:
         persistPreviewChars: 预览截断字符数（默认 500）。
         storeDir: 内容外存目录（默认 ".contex/store"）。
         storeMaxAge: 外存文件最大保留时间，单位秒（默认 86400，24h）。
+        storeMaxFileSize: 单文件最大字节数（超限截断，默认 10MB）。
+        storeMaxTotalSize: 外存目录总容量上限（超限LRU淘汰，默认 500MB）。
+        memoryDir: 记忆持久化目录。
+        runTimeout: 单次 Run 最大执行秒数，0 表示不限。
+        logDir: 结构化日志输出目录（默认 ".contex/log"）。
+        logFormat: 日志输出格式，"TEXT" 或 "JSON"（默认 "TEXT"）。
+        logFlushPerTurn: 是否每轮 AfterTurn 自动刷新日志到文件（默认 True）。
     """
 
     # ---- 内置默认压缩 Prompt ----
@@ -95,6 +102,12 @@ class AgentConfig:
     memoryDir: str = ""
     runTimeout: float = 0.0  # 单次 Run 最大执行秒数，0 表示不限
 
+    # ---- 结构化日志 ----
+
+    logDir: str = ".contex/log"  # 结构化日志输出目录
+    logFormat: str = "TEXT"  # 输出格式：TEXT（人类可读）或 JSON（机器解析）
+    logFlushPerTurn: bool = True  # 每轮 AfterTurn 自动刷新日志到文件
+
     # ---- 属性 ----
 
     @property
@@ -143,6 +156,9 @@ class AgentConfig:
             storeMaxTotalSize=data.get("storeMaxTotalSize", 500 * 1024 * 1024),
             memoryDir=data.get("memoryDir", ""),
             runTimeout=data.get("runTimeout", 0.0),
+            logDir=data.get("logDir", ".contex/log"),
+            logFormat=data.get("logFormat", "TEXT"),
+            logFlushPerTurn=data.get("logFlushPerTurn", True),
         )
 
     def ToDict(self) -> dict:
@@ -178,6 +194,9 @@ class AgentConfig:
             "storeMaxTotalSize": self.storeMaxTotalSize,
             "memoryDir": self.memoryDir,
             "runTimeout": self.runTimeout,
+            "logDir": self.logDir,
+            "logFormat": self.logFormat,
+            "logFlushPerTurn": self.logFlushPerTurn,
         }
 
     def __repr__(self) -> str:

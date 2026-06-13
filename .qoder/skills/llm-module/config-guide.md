@@ -13,7 +13,7 @@
             "modelName": "deepseek-reasoner",
             "timeout": 120,
             "maxRetries": 3,
-            "tier": "high"
+            "streamTimeout": 240
         },
         {
             "name": "deepseek-mid",
@@ -22,18 +22,7 @@
             "apiKey": "sk-xxx",
             "modelName": "deepseek-chat",
             "timeout": 120,
-            "maxRetries": 3,
-            "tier": "mid"
-        },
-        {
-            "name": "deepseek-low",
-            "provider": "openai",
-            "url": "https://api.deepseek.com/v1",
-            "apiKey": "sk-xxx",
-            "modelName": "deepseek-chat",
-            "timeout": 120,
-            "maxRetries": 3,
-            "tier": "low"
+            "maxRetries": 3
         },
         {
             "name": "claude-3",
@@ -42,8 +31,7 @@
             "apiKey": "sk-ant-xxx",
             "modelName": "claude-3-opus-20240229",
             "thinkingBudget": 8000,
-            "timeout": 90,
-            "tier": "high"
+            "timeout": 90
         }
     ],
     "defaultModel": "deepseek-high"
@@ -59,9 +47,9 @@
 | `apiKey` | ✓ | 认证密钥 |
 | `provider` | | `"openai"` / `"anthropic"` / `"gemini"`，缺失时从 url 自动推断 |
 | `modelName` | | 实际模型名，缺失时沿用 name |
-| `tier` | | 档位：`"high"` / `"mid"` / `"low"`，用于 `GetClientByTier` 调度 |
-| `timeout` | | 超时秒数，默认 120 |
-| `maxRetries` | | 最大重试次数，默认 2 |
+| `timeout` | | 请求超时秒数，默认 120（透传给 SDK，框架层也用此值做 asyncio.wait_for 包装） |
+| `maxRetries` | | 最大重试次数，默认 2（透传给 SDK） |
+| `streamTimeout` | | 流式请求总超时秒数，仅框架层 asyncio.wait_for 使用，默认取 timeout × 2 |
 | `thinkingBudget` | | 仅 Anthropic，Extended Thinking 预算 token，默认 4000 |
 
 ## Provider 自动推断
@@ -74,6 +62,6 @@
 | `gemini` 或 `google` | `gemini` |
 | 其他 | `openai` |
 
-## 同档多模型
+## 同名多模型
 
-tier 映射取第一个匹配的模型。例如两个模型都配置 `"tier": "high"`，`GetClientByTier(ETier.HIGH)` 返回先注册的那个。
+`GetProvider(name)` 按 name 精确查找，name 必须唯一。同名注册会覆盖之前的 Provider。

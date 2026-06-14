@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Dict, List, Optional, Type, TypeVar
+from typing import Dict, List, Optional, Type, TypeVar
 
 from .baseComponent import IComponent
 
@@ -84,45 +84,4 @@ class BaseAgent:
             component.OnDestroy()
         self._components.clear()
 
-    # ---- 运行时生命周期模板方法 ----
 
-    async def RunWithLifecycleAsync(
-        self,
-        coreAsyncIterator: AsyncIterator,
-    ) -> AsyncIterator:
-        """生命周期保证模板方法：包装子类的核心异步迭代器，确保 AfterTurnAsync 在所有路径执行。
-
-        无论核心循环正常结束、抛异常、被取消还是超限，
-        finally 中的 AfterTurnAsync 都会被调用，避免内存泄漏
-        （已压缩消息未 Purge、外存文件未 Cleanup、会话摘要未持久化）。
-
-        子类只需实现核心逻辑并传入 async generator，
-        生命周期保证由基类自动提供，无需每个子类各自写 try/finally。
-
-        Args:
-            coreAsyncIterator: 子类的核心异步迭代器（如 _RunReActCoreAsync 的返回值）。
-
-        Yields:
-            核心迭代器产生的每个事件。
-        """
-        from agent.component.contex.contextComponent import ContextComponent
-
-        normalExit = False
-        try:
-            async for event in coreAsyncIterator:
-                yield event
-            normalExit = True
-        finally:
-            ctxComp = self.GetComponent(ContextComponent)
-            if ctxComp is not None:
-                await ctxComp.AfterTurnAsync()
-            from agent.component.logging.loggingComponent import LoggingComponent
-            loggingComp = self.GetComponent(LoggingComponent)
-            if loggingComp is not None:
-                loggingComp.OnAfterTurnAsync()
-            if not normalExit:
-                from agent.component.data.dataComponent import DataComponent
-                from agent.component.data.eAgentState import EAgentState
-                dataComp = self.GetComponent(DataComponent)
-                if dataComp is not None:
-                    dataComp.state = EAgentState.ERROR

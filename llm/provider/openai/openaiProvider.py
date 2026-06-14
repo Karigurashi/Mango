@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import AsyncIterator, Iterator, Optional
 
 import openai
 
 from ..baseProvider import BaseProvider
-from ..chatMessage import ChatChunk, ChatMessage, ChatResponse, TokenUsage, ToolSpec
+from ..chatMessage import ChatChunk, ChatMessage, ChatResponse, TokenUsage, ToolCall, ToolSpec
 from common.cancellationToken import CancellationToken
 from ...llmConfig import LLMModel
 from ...llmRequestParams import LLMRequestParams
@@ -60,6 +61,60 @@ class OpenAIProvider(BaseProvider):
             completionTokens=getattr(usage, "completion_tokens", 0),
             totalTokens=getattr(usage, "total_tokens", 0),
         )
+
+    # ---- 流式工具调用分片拼装 ----
+
+    @staticmethod
+    def _ParseStreamToolCalls(
+        deltaToolCalls: list,
+        accumulator: dict[int, dict],
+    ) -> Optional[list[ToolCall]]:
+        """累加 delta.tool_calls 分片，当所有分片到齐后返回完整 ToolCall 列表。
+
+        OpenAI 流式协议中，工具调用按 delta 分片返回：
+          chunk1: delta.tool_calls[0] = { id, function: { name, arguments: "" } }
+          chunk2: delta.tool_calls[0] = { function: { arguments: '{"qu' } }
+          ...
+          chunkN: finish_reason = "tool_calls"
+
+        拼装逻辑：按 index 累加 id / name / arguments，在流结束时一次性返回。
+        """
+        for tc in deltaToolCalls:
+            idx = getattr(tc, "index", 0)
+            if idx not in accumulator:
+                accumulator[idx] = {"id": "", "name": "", "arguments": ""}
+            entry = accumulator[idx]
+            tcId = getattr(tc, "id", None)
+            if tcId:
+                entry["id"] = tcId
+            func = getattr(tc, "function", None)
+            if func:
+                fName = getattr(func, "name", None)
+                if fName:
+                    entry["name"] = fName
+                fArgs = getattr(func, "arguments", None)
+                if fArgs:
+                    entry["arguments"] += fArgs
+        return None
+
+    @staticmethod
+    def _BuildAccumulatedToolCalls(accumulator: dict[int, dict]) -> list[ToolCall]:
+        """将累加完成的分片拼装为 ToolCall 列表。"""
+        if not accumulator:
+            return []
+        result: list[ToolCall] = []
+        for idx in sorted(accumulator):
+            entry = accumulator[idx]
+            try:
+                args = json.loads(entry["arguments"]) if entry["arguments"] else {}
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            result.append(ToolCall(
+                id=entry["id"],
+                name=entry["name"],
+                arguments=args if isinstance(args, dict) else {},
+            ))
+        return result
 
     # ---- reasoning_content 提取 ----
 
@@ -144,6 +199,8 @@ class OpenAIProvider(BaseProvider):
             )
             stream = self._client.chat.completions.create(**params)
 
+            toolCallAccumulator: dict[int, dict] = {}
+
             for chunk in stream:
                 usage = None
                 if getattr(chunk, "usage", None) is not None:
@@ -160,12 +217,25 @@ class OpenAIProvider(BaseProvider):
                 content = delta.content or "" if delta else ""
                 reasoningContent = self._ExtractReasoning(delta) if delta else ""
 
+                # 累加流式工具调用分片
+                if delta and getattr(delta, "tool_calls", None):
+                    self._ParseStreamToolCalls(delta.tool_calls, toolCallAccumulator)
+
+                finishReason = choice.finish_reason or ""
+
+                # 流结束时输出拼装好的完整工具调用
+                toolCalls = None
+                if finishReason == "tool_calls" and toolCallAccumulator:
+                    toolCalls = self._BuildAccumulatedToolCalls(toolCallAccumulator)
+                    toolCallAccumulator = {}
+
                 cc = ChatChunk(
                     content=content,
                     reasoningContent=reasoningContent,
                     usage=usage,
-                    finishReason=choice.finish_reason or "",
+                    finishReason=finishReason,
                     index=choice.index or 0,
+                    toolCalls=toolCalls,
                 )
                 if not cc.isEmpty:
                     yield cc
@@ -265,6 +335,8 @@ class OpenAIProvider(BaseProvider):
                 )
                 stream = await self._asyncClient.chat.completions.create(**params)
 
+                toolCallAccumulator: dict[int, dict] = {}
+
                 async for chunk in stream:
                     if cancellationToken and cancellationToken.IsCancellationRequested:
                         self._LogCancelled(rid, "StreamAsync")
@@ -286,12 +358,25 @@ class OpenAIProvider(BaseProvider):
                     content = delta.content or "" if delta else ""
                     reasoningContent = self._ExtractReasoning(delta) if delta else ""
 
+                    # 累加流式工具调用分片
+                    if delta and getattr(delta, "tool_calls", None):
+                        self._ParseStreamToolCalls(delta.tool_calls, toolCallAccumulator)
+
+                    finishReason = choice.finish_reason or ""
+
+                    # 流结束时输出拼装好的完整工具调用
+                    toolCalls = None
+                    if finishReason == "tool_calls" and toolCallAccumulator:
+                        toolCalls = self._BuildAccumulatedToolCalls(toolCallAccumulator)
+                        toolCallAccumulator = {}
+
                     cc = ChatChunk(
                         content=content,
                         reasoningContent=reasoningContent,
                         usage=usage,
-                        finishReason=choice.finish_reason or "",
+                        finishReason=finishReason,
                         index=choice.index or 0,
+                        toolCalls=toolCalls,
                     )
                     if not cc.isEmpty:
                         yield cc

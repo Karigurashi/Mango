@@ -24,7 +24,7 @@ from __future__ import annotations
 from ..baseTool import BaseTool
 from ..eToolCategory import EToolCategory
 from ..toolResult import ToolResult
-from ..tool import ToolComponent
+from ..toolComponent import ToolComponent
 
 
 @ToolComponent.Register

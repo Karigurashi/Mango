@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from ..baseTool import BaseTool
 from ..eToolCategory import EToolCategory
 from ..toolResult import ToolResult
-from ..tool import ToolComponent
+from ..toolComponent import ToolComponent
 
 MAX_CONTENT_LENGTH = 100000
 TIMEOUT_SECONDS = 30

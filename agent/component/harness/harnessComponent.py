@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
+from typing import Optional
 
 from agent.component.contex.contextComponent import ContextComponent
 from agent.component.contex.eContextLodLevel import EContextLodLevel
@@ -36,6 +37,23 @@ class HarnessComponent(IComponent):
         harness = agent.GetComponent(HarnessComponent)
         count = await harness.BuildAsync()
     """
+
+    _dataComp: Optional[DataComponent]
+    _engine: Optional[ContextComponent]
+    _ruleComp: Optional[RuleComponent]
+    _skillComp: Optional[SkillComponent]
+    _mcpComp: Optional[McpComponent]
+    _toolComp: Optional[ToolComponent]
+    _built: bool
+
+    def __init__(self) -> None:
+        self._dataComp = None
+        self._engine = None
+        self._ruleComp = None
+        self._skillComp = None
+        self._mcpComp = None
+        self._toolComp = None
+        self._built = False
 
     # ---- IComponent 生命周期 ----
 
@@ -75,6 +93,10 @@ class HarnessComponent(IComponent):
 
         if reloadExtensions:
             self._ReloadExtensions()
+
+        # 加载内置工具（触发 @ToolComponent.Register 装饰器注册到类级表）
+        if self._toolComp is not None:
+            self._toolComp.LoadBuiltins()
 
         count = 0
         session = self._engine.Session

@@ -198,4 +198,5 @@ class ChatChunk:
             and not self.reasoningContent
             and self.usage is None
             and not self.finishReason
+            and not self.toolCalls
         )

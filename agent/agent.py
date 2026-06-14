@@ -162,6 +162,37 @@ class Agent(BaseAgent):
             return True
         return not self._runLock.locked()
 
+    # ---- 生命周期保证 ----
+
+    async def RunWithLifecycleAsync(
+        self,
+        coreAsyncIterator: AsyncIterator[AgentStreamEvent],
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """生命周期保证模板方法：包装核心异步迭代器，确保 AfterTurnAsync 在所有路径执行。
+
+        无论核心循环正常结束、抛异常、被取消还是超限，
+        finally 中的 AfterTurnAsync 都会被调用，避免内存泄漏
+        （已压缩消息未 Purge、外存文件未 Cleanup、会话摘要未持久化）。
+
+        Args:
+            coreAsyncIterator: 核心异步迭代器（如 _RunReActCoreAsync 的返回值）。
+
+        Yields:
+            核心迭代器产生的每个事件。
+        """
+        normalExit = False
+        try:
+            async for event in coreAsyncIterator:
+                yield event
+            normalExit = True
+        finally:
+            if self._ctxComp is not None:
+                await self._ctxComp.AfterTurnAsync()
+            if self._loggingComp is not None:
+                self._loggingComp.OnAfterTurnAsync()
+            if not normalExit:
+                self._dataComp.state = EAgentState.ERROR
+
     # ---- 公共 ReAct 核心 ----
 
     async def _RunReActCoreAsync(
@@ -172,7 +203,7 @@ class Agent(BaseAgent):
     ) -> AsyncIterator[AgentStreamEvent]:
         """ReAct 核心循环，驱动 Think → Act → Observe。
 
-        生命周期保证由 BaseAgent.RunWithLifecycleAsync 提供（AfterTurnAsync / ERROR 状态），
+        生命周期保证由 RunWithLifecycleAsync 提供（AfterTurnAsync / ERROR 状态），
         此方法只负责核心 ReAct 逻辑，不处理 finally 清理。
 
         Args:

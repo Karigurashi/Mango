@@ -11,7 +11,7 @@ from urllib.parse import quote, urlparse
 from ..baseTool import BaseTool
 from ..eToolCategory import EToolCategory
 from ..toolResult import ToolResult
-from ..tool import ToolComponent
+from ..toolComponent import ToolComponent
 
 MAX_RESULTS = 10
 TIMEOUT_SECONDS = 15

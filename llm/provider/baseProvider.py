@@ -48,6 +48,12 @@ class BaseProvider(BaseLLM):
     def ModelName(self) -> str:
         return self._model.modelName
 
+    # ———— 工具绑定 ————
+
+    def BindTools(self, tools: list) -> None:
+        """工具绑定由 LLMComponent 通过 LLMRequestParams 统一管理，Provider 层无需实现。"""
+        pass
+
     # ———— 资源清理 ————
     def Close(self) -> None:
         """关闭底层 SDK 客户端（同步）。"""

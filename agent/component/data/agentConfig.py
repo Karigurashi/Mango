@@ -23,10 +23,9 @@ class AgentConfig:
         skillsDir: Skill 扫描目录（``**/SKILL.md``）。
         rulesDir: Rule 扫描目录（``*.rule.md``）。
         mcpJsonPath: MCP 配置文件路径（``.mcp.json``）。
-        maxRetries: LLM 调用最大重试次数（仅对可重试错误生效）。
-        retryBaseDelay: 重试基础等待秒数，实际延迟 = baseDelay * 2^attempt。
-        retryMaxDelay: 重试最大等待秒数，防止退避过大。
-        retryableStatusCodes: 触发重试的 HTTP 状态码集合。
+
+        重试参数已迁移至 llm/llmConfig.py 的 LLMConfig（models.json 全局配置），
+        Agent 层不再持有 LLM 重试配置。
 
         maxTokens: Token 预算上限（默认 128000）。
         reserveTokens: 为模型回复预留的 token 数（默认 4096）。
@@ -75,10 +74,6 @@ class AgentConfig:
     skillsDir: str = str(ERoad.SKILLS_DIR)
     rulesDir: str = str(ERoad.RULES_DIR)
     mcpJsonPath: str = str(ERoad.MCP_JSON_PATH)
-    maxRetries: int = 3
-    retryBaseDelay: float = 1.0
-    retryMaxDelay: float = 30.0
-    retryableStatusCodes: tuple = (429, 500, 502, 503, 504)
 
     # ---- 上下文引擎 ----
 
@@ -120,6 +115,77 @@ class AgentConfig:
             return self.tokenBudget
         return self.maxTokens - self.reserveTokens
 
+    # ---- 校验 ----
+
+    def Validate(self) -> list[str]:
+        """校验配置合法性，返回错误列表（空列表表示通过）。
+
+        覆盖关键数值字段的边界条件，确保 Agent 启动前配置可用。
+        """
+        errors: list[str] = []
+
+        # 循环行为
+        if self.maxTurns <= 0:
+            errors.append(f"maxTurns must be > 0, got {self.maxTurns}")
+        if self.tokenBudget < 0:
+            errors.append(f"tokenBudget must be >= 0, got {self.tokenBudget}")
+        if self.runTimeout < 0:
+            errors.append(f"runTimeout must be >= 0, got {self.runTimeout}")
+
+        # 上下文引擎
+        if self.maxTokens <= 0:
+            errors.append(f"maxTokens must be > 0, got {self.maxTokens}")
+        if self.reserveTokens < 0:
+            errors.append(f"reserveTokens must be >= 0, got {self.reserveTokens}")
+        if self.reserveTokens >= self.maxTokens:
+            errors.append(
+                f"reserveTokens ({self.reserveTokens}) must be < maxTokens ({self.maxTokens})"
+            )
+        if not (0.0 <= self.compactThreshold <= 1.0):
+            errors.append(
+                f"compactThreshold must be in [0.0, 1.0], got {self.compactThreshold}"
+            )
+        if self.recentTurnCount <= 0:
+            errors.append(f"recentTurnCount must be > 0, got {self.recentTurnCount}")
+        if self.keepRecentTurns < 0:
+            errors.append(f"keepRecentTurns must be >= 0, got {self.keepRecentTurns}")
+        if self.lod3LineThreshold <= 0:
+            errors.append(f"lod3LineThreshold must be > 0, got {self.lod3LineThreshold}")
+        if self.lod3SizeThreshold <= 0:
+            errors.append(f"lod3SizeThreshold must be > 0, got {self.lod3SizeThreshold}")
+        if self.summaryMaxTokens <= 0:
+            errors.append(f"summaryMaxTokens must be > 0, got {self.summaryMaxTokens}")
+        if self.batchSummaryMaxTokens <= 0:
+            errors.append(
+                f"batchSummaryMaxTokens must be > 0, got {self.batchSummaryMaxTokens}"
+            )
+
+        # 外存
+        if self.persistCharThreshold <= 0:
+            errors.append(
+                f"persistCharThreshold must be > 0, got {self.persistCharThreshold}"
+            )
+        if self.persistPreviewChars < 0:
+            errors.append(
+                f"persistPreviewChars must be >= 0, got {self.persistPreviewChars}"
+            )
+        if self.storeMaxAge < 0:
+            errors.append(f"storeMaxAge must be >= 0, got {self.storeMaxAge}")
+        if self.storeMaxFileSize <= 0:
+            errors.append(
+                f"storeMaxFileSize must be > 0, got {self.storeMaxFileSize}"
+            )
+        if self.storeMaxTotalSize <= 0:
+            errors.append(
+                f"storeMaxTotalSize must be > 0, got {self.storeMaxTotalSize}"
+            )
+
+        # 日志
+        if self.logFormat not in ("TEXT", "JSON"):
+            errors.append(f"logFormat must be 'TEXT' or 'JSON', got {self.logFormat!r}")
+
+        return errors
+
     # ---- 序列化 ----
 
     @staticmethod
@@ -133,10 +199,6 @@ class AgentConfig:
             skillsDir=data.get("skillsDir", str(ERoad.SKILLS_DIR)),
             rulesDir=data.get("rulesDir", str(ERoad.RULES_DIR)),
             mcpJsonPath=data.get("mcpJsonPath", str(ERoad.MCP_JSON_PATH)),
-            maxRetries=data.get("maxRetries", 3),
-            retryBaseDelay=data.get("retryBaseDelay", 1.0),
-            retryMaxDelay=data.get("retryMaxDelay", 30.0),
-            retryableStatusCodes=tuple(data.get("retryableStatusCodes", (429, 500, 502, 503, 504))),
             maxTokens=data.get("maxTokens", 128000),
             reserveTokens=data.get("reserveTokens", 4096),
             compactThreshold=data.get("compactThreshold", 0.85),
@@ -171,10 +233,6 @@ class AgentConfig:
             "skillsDir": self.skillsDir,
             "rulesDir": self.rulesDir,
             "mcpJsonPath": self.mcpJsonPath,
-            "maxRetries": self.maxRetries,
-            "retryBaseDelay": self.retryBaseDelay,
-            "retryMaxDelay": self.retryMaxDelay,
-            "retryableStatusCodes": list(self.retryableStatusCodes),
             "maxTokens": self.maxTokens,
             "reserveTokens": self.reserveTokens,
             "compactThreshold": self.compactThreshold,
@@ -204,8 +262,7 @@ class AgentConfig:
             f"AgentConfig(maxTurns={self.maxTurns}, "
             f"tokenBudget={self.tokenBudget}, "
             f"autoCompact={self.autoCompact}, "
-            f"maxTokens={self.maxTokens}, "
-            f"maxRetries={self.maxRetries})"
+            f"maxTokens={self.maxTokens})"
         )
 
     # ---- 默认配置工厂 ----

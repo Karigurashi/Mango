@@ -130,12 +130,14 @@ class CheckpointManager:
         content = frontmatter + "\n".join(bodyLines)
 
         # 写入 checkpoints/{workflowName}/{sessionId}.md
+        # 先原子写入版本文件，再原子写入 latest.md，两步均走 MemoryStore.WriteFile（
+        # 已采用 tempfile + os.replace），任一步崩溃都不会留下被截断的中间文件。
         checkpointDir = os.path.join(self._store.CheckpointsDir, safeName)
         os.makedirs(checkpointDir, exist_ok=True)
         filePath = os.path.join(checkpointDir, f"{sessionId}.md")
 
         if self._store.WriteFile(filePath, content):
-            # 同步更新 latest.md
+            # 同步更新 latest.md（同样为原子写入）
             latestPath = os.path.join(checkpointDir, "latest.md")
             self._store.WriteFile(latestPath, content)
             Logger.Info(

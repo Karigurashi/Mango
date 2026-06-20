@@ -42,11 +42,16 @@ class WriteFileTool(BaseTool):
 
     def _Invoke(self, filePath: str, content: str) -> ToolResult:
         try:
-            parentDir = os.path.dirname(filePath)
+            try:
+                safePath = self._SanitizePath(filePath, self._GetAllowedRoot())
+            except ValueError as exc:
+                return ToolResult.Fail(str(exc), toolName=self.name)
+
+            parentDir = os.path.dirname(safePath)
             if parentDir:
                 os.makedirs(parentDir, exist_ok=True)
 
-            with open(filePath, "w", encoding="utf-8") as f:
+            with open(safePath, "w", encoding="utf-8") as f:
                 f.write(content)
 
             lineCount = content.count("\n") + 1 if content else 0

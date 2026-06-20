@@ -7,6 +7,7 @@ MCP Server 注册表，支持 .mcp.json 加载与多种传输协议。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, Optional, TYPE_CHECKING
@@ -132,21 +133,39 @@ class McpComponent(IComponent):
 
     # ---- 真实连接与工具发现 ----
 
+    _CONNECT_ALL_TIMEOUT = 60.0
+
     async def ConnectAllAsync(
         self,
         cancellationToken: Optional[CancellationToken] = None,
     ) -> list["McpTool"]:
         """连接全部已启用的 stdio MCP Server，发现并适配其工具。
 
-        逐个启动 Server 子进程、完成 initialize 握手、tools/list 发现工具，
-        将每个远程工具包装为 McpTool 返回。任一 Server 失败仅记录日志并跳过，
-        不影响其他 Server 与整体 Agent 构建。远程（http/sse）传输暂不支持。
-
-        客户端引用被持有，OnDestroy 时统一终止子进程。
+        整体超时保护：包装 _ConnectAllInternalAsync，超过 _CONNECT_ALL_TIMEOUT 后
+        返回空列表，避免起动阶段某个偏远 Server 永久阻塞拖垮整个 Agent。
+        任一 Server 失败仅记录日志并跳过，不影响其他 Server 与整体 Agent 构建。远程（http/sse）
+        传输暂不支持。
 
         Returns:
             可注入 ToolComponent 的 McpTool 列表。
         """
+        try:
+            return await asyncio.wait_for(
+                self._ConnectAllInternalAsync(cancellationToken),
+                timeout=self._CONNECT_ALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            Logger.Warning(
+                f"MCP ConnectAll timed out after {self._CONNECT_ALL_TIMEOUT:.0f}s, "
+                f"returning {len(self._clients)} partially connected client(s)"
+            )
+            return []
+
+    async def _ConnectAllInternalAsync(
+        self,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> list["McpTool"]:
+        """ConnectAllAsync 内部实现，不含超时包装。"""
         from .mcpClient import McpStdioClient
         from .mcpTool import McpTool
 

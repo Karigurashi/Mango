@@ -8,6 +8,7 @@ from enum import IntEnum
 from typing import NamedTuple, TYPE_CHECKING
 
 from common.const import ERole
+from common.logger import Logger
 from llm.provider.chatMessage import ChatMessage
 from llm.llmRequestParams import LLMRequestParams
 
@@ -305,7 +306,10 @@ class ContextCompactor:
                 timeout=self._COMPACTION_TIMEOUT,
             )
             return response.content.strip()
-        except (asyncio.TimeoutError, Exception):
+        except (asyncio.TimeoutError, Exception) as exc:
+            Logger.Warning(
+                f"LLM compaction failed, falling back to truncation: {exc}"
+            )
             return self._TruncateText(
                 msg.content, self._config.summaryMaxTokens * 4
             )
@@ -332,7 +336,10 @@ class ContextCompactor:
                 timeout=self._COMPACTION_TIMEOUT,
             )
             return response.content.strip()
-        except (asyncio.TimeoutError, Exception):
+        except (asyncio.TimeoutError, Exception) as exc:
+            Logger.Warning(
+                f"LLM compaction failed, falling back to truncation: {exc}"
+            )
             return self._TruncateText(
                 combinedText, self._config.batchSummaryMaxTokens * 4
             )

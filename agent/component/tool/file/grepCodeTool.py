@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import deque
 
 from ..baseTool import BaseTool
 from ..eToolCategory import EToolCategory
@@ -13,6 +14,7 @@ from ..toolComponent import ToolComponent
 MAX_RESULTS = 500
 MAX_LINE_LENGTH = 500
 CONTEXT_LINES = 2
+MAX_REGEX_CACHE_SIZE = 128
 
 
 @ToolComponent.Register
@@ -21,6 +23,28 @@ class GrepCodeTool(BaseTool):
 
     支持文件类型过滤、上下文行展示。
     """
+
+    # 类级正则缓存：避免同 pattern 重复编译。
+    # key = (pattern, flags) → 已编译的 re.Pattern。
+    _REGEX_CACHE: dict[tuple[str, int], re.Pattern] = {}
+
+    @classmethod
+    def _CompileRegex(cls, pattern: str, flags: int) -> re.Pattern:
+        """编译正则表达式，带过期限制的类级缓存。"""
+        cacheKey = (pattern, flags)
+        cached = cls._REGEX_CACHE.get(cacheKey)
+        if cached is not None:
+            return cached
+
+        compiled = re.compile(pattern, flags)
+
+        # 简易 LRU：超过上限时删除首个旧项
+        if len(cls._REGEX_CACHE) >= MAX_REGEX_CACHE_SIZE:
+            firstKey = next(iter(cls._REGEX_CACHE))
+            cls._REGEX_CACHE.pop(firstKey, None)
+
+        cls._REGEX_CACHE[cacheKey] = compiled
+        return compiled
 
     name: str = "grep_code"
     description: str = (
@@ -65,13 +89,17 @@ class GrepCodeTool(BaseTool):
         caseSensitive: bool = False,
     ) -> ToolResult:
         try:
-            rootDir = os.path.abspath(rootDir)
+            try:
+                rootDir = self._SanitizePath(rootDir, self._GetAllowedRoot())
+            except ValueError as exc:
+                return ToolResult.Fail(str(exc), toolName=self.name)
+
             if not os.path.isdir(rootDir):
                 return ToolResult.Fail(f"Not a directory: {rootDir}", toolName=self.name)
 
             flags = 0 if caseSensitive else re.IGNORECASE
             try:
-                regex = re.compile(pattern, flags)
+                regex = self._CompileRegex(pattern, flags)
             except re.error as exc:
                 return ToolResult.Fail(f"Invalid regex pattern: {exc}", toolName=self.name)
 
@@ -95,36 +123,49 @@ class GrepCodeTool(BaseTool):
                     filePath = os.path.join(root, filename)
                     relPath = os.path.relpath(filePath, rootDir)
 
+                    fileMatches: list[tuple[int, str]] = []
+                    contextRing: deque[tuple[int, str]] = deque(maxlen=contextLines + 1)
+                    pendingTrailing = 0  # 匹配后需再读取的后置上下文行数
+                    capturedTrailing: list[tuple[int, str]] = []
+                    captured: dict[int, str] = {}
+
                     try:
                         with open(filePath, "r", encoding="utf-8", errors="replace") as f:
-                            lines = f.readlines()
+                            for idx, line in enumerate(f, start=1):
+                                stripped = line.rstrip("\n\r")
+                                contextRing.append((idx, stripped))
+
+                                if regex.search(line):
+                                    fileMatches.append((idx, stripped))
+                                    matchCount += 1
+                                    # 快照当前环形区（包含当前行及其前 contextLines 行）
+                                    for ctxIdx, ctxText in contextRing:
+                                        captured.setdefault(ctxIdx, ctxText)
+                                    pendingTrailing = contextLines
+                                    if matchCount >= MAX_RESULTS:
+                                        break
+                                    continue
+
+                                if pendingTrailing > 0:
+                                    captured.setdefault(idx, stripped)
+                                    pendingTrailing -= 1
                     except (PermissionError, OSError):
                         continue
 
-                    fileMatches: list[str] = []
-                    for i, line in enumerate(lines):
-                        if regex.search(line):
-                            fileMatches.append((i + 1, line.rstrip("\n\r")))
-                            matchCount += 1
-                            if matchCount >= MAX_RESULTS:
-                                break
+                    if not fileMatches:
+                        continue
 
-                    if fileMatches:
-                        results.append(f"\n[{relPath}]")
-                        lastShown = -contextLines - 1
-                        for lineNum, lineText in fileMatches:
-                            if lineNum - lastShown > contextLines + 1:
-                                results.append("  ...")
-                            start = max(0, lineNum - contextLines - 1)
-                            for ctxIdx in range(start, min(len(lines), lineNum + contextLines)):
-                                ctxLineNum = ctxIdx + 1
-                                if ctxLineNum <= lastShown + contextLines:
-                                    continue
-                                ctxText = lines[ctxIdx].rstrip("\n\r")
-                                marker = ">" if ctxLineNum == lineNum else " "
-                                ctxText = ctxText[:MAX_LINE_LENGTH]
-                                results.append(f"  {marker} {ctxLineNum:>6}: {ctxText}")
-                                lastShown = ctxLineNum
+                    results.append(f"\n[{relPath}]")
+                    sortedIdx = sorted(captured.keys())
+                    matchSet = {ln for ln, _ in fileMatches}
+                    prevIdx = -10
+                    for ln in sortedIdx:
+                        if ln - prevIdx > 1 and prevIdx > 0:
+                            results.append("  ...")
+                        ctxText = captured[ln][:MAX_LINE_LENGTH]
+                        marker = ">" if ln in matchSet else " "
+                        results.append(f"  {marker} {ln:>6}: {ctxText}")
+                        prevIdx = ln
 
                 if matchCount >= MAX_RESULTS:
                     break

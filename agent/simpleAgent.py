@@ -41,6 +41,7 @@ class SimpleAgent(BaseAgent):
         self._dataComp = self.AddComponent(DataComponent)
         self._dataComp.llm = llm
         self._llmComp = self.AddComponent(LLMComponent)
+        self._llmComp.llm = llm
         self.InitAllComponents()
 
     # ---- 单轮纯对话 ----
@@ -59,6 +60,6 @@ class SimpleAgent(BaseAgent):
         ):
             if chunk.content:
                 fullContent += chunk.content
-                yield AgentStreamEvent.TextDelta(chunk.content)
+                yield self._EmitEvent(AgentStreamEvent.TextDelta(chunk.content))
 
-        yield AgentStreamEvent.Done()
+        yield self._EmitEvent(AgentStreamEvent.Done())

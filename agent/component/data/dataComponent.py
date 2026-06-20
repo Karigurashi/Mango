@@ -1,7 +1,7 @@
 """DataComponent —— Agent 运行时数据组件，持有 AgentConfig 作为配置成员。
 
 DataComponent 是 IComponent，通过 OnInitialize/OnDestroy 感知生命周期，
-统一管理 Agent 运行时的配置数据。
+统一管理 Agent 运行时的配置数据、状态机和 LLM 实例。
 """
 
 from __future__ import annotations
@@ -9,8 +9,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agent.core.baseComponent import IComponent
+from common.logger import Logger
 from .agentConfig import AgentConfig
-from .eAgentState import EAgentState
+from .eAgentState import EAgentState, VALID_TRANSITIONS
 
 if TYPE_CHECKING:
     from agent.core.baseAgent import BaseAgent
@@ -22,14 +23,14 @@ class DataComponent(IComponent):
 
     Attributes:
         config: Agent 运行时配置（循环行为、Token 预算、上下文引擎、重试策略等）。
-        state: Agent 当前运行状态。
+        state: Agent 当前运行状态（通过 setter 校验合法转移）。
         llm: 底层 BaseLLM 实例。
     """
 
     def __init__(self) -> None:
         self._config: AgentConfig = AgentConfig.Default()
         self._llm: BaseLLM | None = None
-        self.state = EAgentState.IDLE
+        self._state: EAgentState = EAgentState.IDLE
 
     # ---- 属性 ----
 
@@ -53,11 +54,31 @@ class DataComponent(IComponent):
     def llm(self, value: BaseLLM) -> None:
         self._llm = value
 
+    @property
+    def state(self) -> EAgentState:
+        """Agent 当前运行状态。"""
+        return self._state
+
+    @state.setter
+    def state(self, newState: EAgentState) -> None:
+        """设置新状态，非法转移仅警告不阻断（避免破坏现有流程，便于排查）。"""
+        if newState != self._state:
+            allowedTargets = VALID_TRANSITIONS.get(self._state, set())
+            if newState not in allowedTargets:
+                Logger.Warning(
+                    f"Invalid state transition: {self._state.name} -> {newState.name}"
+                )
+        self._state = newState
+
     # ---- 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
-        """挂载后初始化。"""
-        pass
+        """挂载后初始化，校验配置合法性。"""
+        errors = self._config.Validate()
+        if errors:
+            raise ValueError(
+                f"AgentConfig validation failed: {'; '.join(errors)}"
+            )
 
     def OnDestroy(self) -> None:
         """从 BaseAgent 卸载时回调。"""
@@ -69,6 +90,5 @@ class DataComponent(IComponent):
         return (
             f"DataComponent(maxTurns={self._config.maxTurns}, "
             f"tokenBudget={self._config.tokenBudget}, "
-            f"autoCompact={self._config.autoCompact}, "
-            f"maxRetries={self._config.maxRetries})"
+            f"autoCompact={self._config.autoCompact})"
         )

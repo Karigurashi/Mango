@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Type, TypeVar
 
+from agent.agentStreamEvent import AgentStreamEvent
+from agent.component.eventPush.eventPushComponent import EventPushComponent
+
 from .baseComponent import IComponent
 
 T = TypeVar("T", bound=IComponent)
@@ -23,6 +26,7 @@ class BaseAgent:
 
     def __init__(self) -> None:
         self._components: Dict[Type[IComponent], IComponent] = {}
+        self._initialized: bool = False
 
     # ---- Component 管理 ----
 
@@ -31,6 +35,8 @@ class BaseAgent:
 
         若同类型已存在，直接返回已有实例，不重复构造。
         构造函数 MUST NOT 接收业务参数，真正的初始化在 OnInitialize 中完成。
+
+        若 InitAllComponents 已执行过，新挂载的组件会立即调用 OnInitialize。
 
         Args:
             compType: Component 类型（泛型 T）。
@@ -44,6 +50,8 @@ class BaseAgent:
 
         component = compType()
         self._components[compType] = component
+        if self._initialized:
+            component.OnInitialize(self)
         return component
 
     def InitAllComponents(self) -> None:
@@ -55,6 +63,7 @@ class BaseAgent:
         """
         for component in self._components.values():
             component.OnInitialize(self)
+        self._initialized = True
 
     def RemoveComponent(self, compType: Type[T]) -> Optional[T]:
         """卸载指定类型 Component，返回被移除的实例。

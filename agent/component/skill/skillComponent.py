@@ -77,6 +77,25 @@ class SkillComponent(IComponent):
         """获取所有允许 Agent 自动调用的 Skill。"""
         return [s for s in self._skills.values() if s.IsAutoInvokable()]
 
+    def GetAllowedToolNames(self) -> set[str]:
+        """获取当前激活技能的工具白名单并集，空集表示无约束。
+
+        逻辑：
+        - 遍历所有已注册 Skill，如果任一 Skill 声明了 ``allowedTools``，
+          则认为进入“限制模式”，返回所有 ``allowedTools`` 的并集。
+        - 若以上都未声明限制，返回空集表示不进行工具过滤。
+
+        Returns:
+            允许使用的工具名称集合。
+        """
+        allowed: set[str] = set()
+        hasConstraint = False
+        for skill in self._skills.values():
+            if skill.allowedTools:
+                hasConstraint = True
+                allowed.update(skill.allowedTools)
+        return allowed if hasConstraint else set()
+
     # ---- 文件系统加载 ----
 
     def LoadFromDirectory(self, directory: str) -> int:

@@ -89,15 +89,22 @@ class LLMManager:
         """根据 LLMModel 创建对应的 BaseLLM 实例。
 
         provider 优先取 config.provider，为空时根据 URL 自动推断。
+        重试参数从全局 LLMConfig 读取，所有模型共享同一份配置。
         """
         providerType = config.provider or cls._InferProvider(config.url)
+        retryKwargs = {
+            "maxRetries": cls._config.maxRetries,
+            "retryBaseDelay": cls._config.retryBaseDelay,
+            "retryMaxDelay": cls._config.retryMaxDelay,
+            "timeout": cls._config.timeout,
+        }
 
         if providerType == "anthropic":
-            return AnthropicProvider(config)
+            return AnthropicProvider(config, **retryKwargs)
         elif providerType == "gemini":
-            return GeminiProvider(config)
+            return GeminiProvider(config, **retryKwargs)
         else:
-            return OpenAIProvider(config)
+            return OpenAIProvider(config, **retryKwargs)
 
     @staticmethod
     def _InferProvider(url: str) -> str:

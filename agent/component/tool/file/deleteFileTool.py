@@ -37,16 +37,21 @@ class DeleteFileTool(BaseTool):
 
     def _Invoke(self, filePath: str) -> ToolResult:
         try:
-            if not os.path.exists(filePath):
+            try:
+                safePath = self._SanitizePath(filePath, self._GetAllowedRoot())
+            except ValueError as exc:
+                return ToolResult.Fail(str(exc), toolName=self.name)
+
+            if not os.path.exists(safePath):
                 return ToolResult.Fail(f"File not found: {filePath}", toolName=self.name)
 
-            if os.path.isdir(filePath):
+            if os.path.isdir(safePath):
                 return ToolResult.Fail(
                     f"Cannot delete directory: {filePath}. Use shell rm -rf for directories.",
                     toolName=self.name,
                 )
 
-            os.remove(filePath)
+            os.remove(safePath)
             return ToolResult.Ok(f"Successfully deleted: {filePath}", toolName=self.name)
 
         except PermissionError:

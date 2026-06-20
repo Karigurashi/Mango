@@ -9,6 +9,8 @@ from ..eToolCategory import EToolCategory
 from ..toolResult import ToolResult
 from ..toolComponent import ToolComponent
 
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
 
 @ToolComponent.Register
 class ReadFileTool(BaseTool):
@@ -51,10 +53,22 @@ class ReadFileTool(BaseTool):
         endLine: int = 0,
     ) -> ToolResult:
         try:
-            if not os.path.isfile(filePath):
+            try:
+                safePath = self._SanitizePath(filePath, self._GetAllowedRoot())
+            except ValueError as exc:
+                return ToolResult.Fail(str(exc), toolName=self.name)
+
+            if not os.path.isfile(safePath):
                 return ToolResult.Fail(f"File not found: {filePath}", toolName=self.name)
 
-            with open(filePath, "r", encoding="utf-8", errors="replace") as f:
+            fileSize = os.path.getsize(safePath)
+            if fileSize > MAX_FILE_SIZE:
+                return ToolResult.Fail(
+                    f"File too large: {fileSize} bytes exceeds limit of {MAX_FILE_SIZE} bytes ({filePath}).",
+                    toolName=self.name,
+                )
+
+            with open(safePath, "r", encoding="utf-8", errors="replace") as f:
                 if startLine > 0 or endLine > 0:
                     lines = f.readlines()
                     total = len(lines)

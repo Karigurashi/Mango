@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC
 from typing import Any
 
@@ -164,6 +165,39 @@ class BaseTool(ABC):
             "category": cls.category.value,
             "parameters": cls.parameters,
         }
+
+    # ---- 安全工具方法 ----
+
+    @staticmethod
+    def _SanitizePath(path: str, allowedRoot: str) -> str:
+        """规范化路径并验证在 allowedRoot 内，防止路径遍历攻击。
+
+        Args:
+            path: 待校验的原始路径（可为相对或绝对）。
+            allowedRoot: 允许的根目录（绝对路径）。
+
+        Returns:
+            规范化后的绝对路径。
+
+        Raises:
+            ValueError: 路径越界（解析后逸出 allowedRoot）。
+        """
+        resolved = os.path.realpath(os.path.abspath(path))
+        root = os.path.realpath(os.path.abspath(allowedRoot))
+        if not resolved.startswith(root + os.sep) and resolved != root:
+            raise ValueError(
+                f"Path traversal blocked: {path} resolves outside allowed root"
+            )
+        return resolved
+
+    @staticmethod
+    def _GetAllowedRoot() -> str:
+        """获取路径校验的允许根目录。
+
+        当前实现：返回 os.getcwd() 作为 fallback。
+        Tool 实例若持有 Agent 引用，可在子类覆盖以返回 AgentConfig.workspaceRoot。
+        """
+        return os.getcwd()
 
     # ---- 魔法方法 ----
 

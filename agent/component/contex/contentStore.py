@@ -23,6 +23,10 @@ class ContentStore:
         self.storeDir = storeDir
         self.maxFileSize = maxFileSize  # 0 时使用内部默认值 10MB
         self.maxTotalSize = maxTotalSize  # 0 时使用内部默认值 500MB
+        # 总容量缓存：避免每次 _EvictIfNeeded/GetTotalSize 都全目录扫描，
+        # Store/Cleanup 等修改路径会置 _cacheDirty=True，下一次 GetTotalSize 重算。
+        self._cachedSize: int = 0
+        self._cacheDirty: bool = True
 
     def Store(self, content: str) -> str:
         """将大内容原子写入外存，返回文件路径。
@@ -62,6 +66,8 @@ class ContentStore:
                 os.unlink(tmpPath)
             raise
 
+        # 写入成功后标记缓存失效
+        self._cacheDirty = True
         return filepath
 
     def Load(self, path: str) -> str | None:
@@ -124,11 +130,21 @@ class ContentStore:
             except OSError:
                 pass
 
+        if count > 0:
+            self._cacheDirty = True
         return count
 
     def GetTotalSize(self) -> int:
-        """计算外存目录中所有文件的总字节数。"""
+        """计算外存目录中所有文件的总字节数。
+
+        引入脏标位缓存：仅在 Store/Cleanup/_EvictIfNeeded 等修改路径后
+        触发重新扫描，否则直接返回上次结果，避免高频写入场景下的 O(N) 全扫。
+        """
+        if not self._cacheDirty:
+            return self._cachedSize
         if not os.path.isdir(self.storeDir):
+            self._cachedSize = 0
+            self._cacheDirty = False
             return 0
         totalSize = 0
         for filename in os.listdir(self.storeDir):
@@ -138,6 +154,8 @@ class ContentStore:
                     totalSize += os.path.getsize(filepath)
                 except OSError:
                     pass
+        self._cachedSize = totalSize
+        self._cacheDirty = False
         return totalSize
 
     def _EvictIfNeeded(self, incomingSize: int) -> int:
@@ -187,6 +205,8 @@ class ContentStore:
             except OSError:
                 pass
 
+        if evicted > 0:
+            self._cacheDirty = True
         return evicted
 
     def BuildPathReference(self, path: str, originalSize: int, summary: str) -> str:

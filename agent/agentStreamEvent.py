@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import NamedTuple, Optional
+from typing import Optional
 
 from agent.component.tool.toolResult import ToolResult
 
@@ -32,7 +33,8 @@ class EAgentStreamEventType(IntEnum):
     DONE = 6
 
 
-class AgentStreamEvent(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class AgentStreamEvent:
     """Agent 流式事件，供 webView 实时渲染。
 
     Attributes:

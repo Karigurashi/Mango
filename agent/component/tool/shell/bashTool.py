@@ -61,7 +61,7 @@ _DANGEROUS_PATTERNS: list[re.Pattern] = [
     # 磁盘操作
     re.compile(r">\s*/dev/", re.IGNORECASE),
     re.compile(r"\bdd\s+if=", re.IGNORECASE),
-    # 网络下载
+    # 网络下载管道执行
     re.compile(r"\b(curl|wget)\s+.*\|\s*(ba)?sh", re.IGNORECASE),
     # fork bomb
     re.compile(r":\(\s*\)\s*\{\s*:"),
@@ -70,11 +70,16 @@ _DANGEROUS_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bPATH\s*=", re.IGNORECASE),
     # 权限提升
     re.compile(r"\bsudo\b", re.IGNORECASE),
-    # 命令替换（$()、反引号）—— 绕过白名单的主要手段
+    # 命令替换 $(...) —— 允许任意空格变种，如 $( cmd )、$(\tcmd)
     re.compile(r"\$\("),
+    # 变量扩展 ${...}（包含 ${IFS}、${PATH} 等注入手法）
+    re.compile(r"\$\{"),
+    # 反引号命令替换，含转义变种 \` 与嵌套 ` ... ` \` ... \` `
     re.compile(r"`"),
+    re.compile(r"\\`"),
     # 进程替换
     re.compile(r"<\("),
+    re.compile(r">\("),
     # 写入系统关键路径
     re.compile(r">\s*/(etc|bin|sbin|usr|boot|sys|proc)/", re.IGNORECASE),
 ]
@@ -115,6 +120,10 @@ class BashTool(BaseTool):
                 "type": "integer",
                 "description": "Optional. Timeout in seconds (default 120)",
             },
+            "allowUnsafe": {
+                "type": "boolean",
+                "description": "Optional. If true, skip allowed-list whitelist check (blacklist & dangerous patterns still enforced). Default false.",
+            },
         },
         "required": ["command"],
     }
@@ -138,12 +147,12 @@ class BashTool(BaseTool):
 
     # ---- 执行逻辑 ----
 
-    async def _InvokeAsync(self, command: str, timeout: int = 120) -> ToolResult:
+    async def _InvokeAsync(self, command: str, timeout: int = 120, allowUnsafe: bool = False) -> ToolResult:
         import asyncio
 
         # ---- 安全校验 ----
         if self.sandboxEnabled:
-            validationError = self._ValidateCommand(command)
+            validationError = self._ValidateCommand(command, allowUnsafe=allowUnsafe)
             if validationError:
                 return ToolResult.Fail(
                     f"Command rejected by security sandbox: {validationError}\n"
@@ -214,16 +223,17 @@ class BashTool(BaseTool):
 
     # ---- 安全校验 ----
 
-    def _ValidateCommand(self, command: str) -> str:
+    def _ValidateCommand(self, command: str, allowUnsafe: bool = False) -> str:
         """校验命令安全性，返回空字符串表示通过，否则返回拒绝原因。
 
         校验顺序：
-        1. 危险模式正则匹配（含命令替换、进程替换等绕过手段）
-        2. 逐子命令段校验黑名单（按 &&、||、|、;、& 拆分，防止 `echo ok && rm -rf ~` 绕过）
-        3. 逐子命令段校验白名单（仅当白名单非空时）
+        1. 危险模式正则匹配（含命令替换、进程替换等绕过手段）——始终启用
+        2. 逐子命令段校验黑名单（按 &&、||、|、;、& 拆分）——始终启用
+        3. 逐子命令段校验白名单（仅当白名单非空且 allowUnsafe=False 时）
 
-        早期实现仅校验首个命令却执行整条原始串，可被 `&&` / `$()` 等轻易绕过，
-        此处对每个子命令段独立校验，确保复合命令的每一段都在策略允许范围内。
+        Args:
+            command: 待校验的命令字符串。
+            allowUnsafe: 为 True 时跳过白名单校验，仁依黑名单与危险模式。
         """
         if not command.strip():
             return "Empty command"
@@ -241,7 +251,7 @@ class BashTool(BaseTool):
         for baseCommand in segments:
             if baseCommand in self.blockedCommands:
                 return f"Command '{baseCommand}' is in the blocked list"
-            if self.allowedCommands and baseCommand not in self.allowedCommands:
+            if not allowUnsafe and self.allowedCommands and baseCommand not in self.allowedCommands:
                 return (
                     f"Command '{baseCommand}' is not in the allowed list. "
                     f"Allowed: {', '.join(sorted(self.allowedCommands))}"

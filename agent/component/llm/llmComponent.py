@@ -2,12 +2,16 @@
 
 挂载到 BaseAgent 后，通过 BaseAgent.GetComponent(LLMComponent) 获取 LLM 实例、
 工具绑定、用量追踪和四维调用能力。
+
+重试机制已下沉至 llm/provider/BaseProvider 层，
+LLMComponent 仅做透明代理，不再包含任何重试逻辑。
 """
 
 from __future__ import annotations
 
 from typing import AsyncIterator, Iterator, Optional, TYPE_CHECKING, Union
 
+from agent.component.data import dataComponent
 from agent.core.baseComponent import IComponent
 from common.cancellationToken import CancellationToken
 from llm.baseLLM import BaseLLM
@@ -43,13 +47,11 @@ class LLMComponent(IComponent):
     # ---- 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
-        """挂载后初始化，从 DataComponent 获取 BaseLLM 实例并初始化独立 TokenEstimator。"""
-        from agent.component.data.dataComponent import DataComponent
+        """挂载后初始化 TokenEstimator。"""
+        dataComponent = agent.GetComponent(dataComponent)
 
-        dataComp = agent.GetComponent(DataComponent)
-        self._llm = dataComp.llm
-        if self._llm is not None:
-            self._tokenEstimator.Configure(modelName=self._llm.ModelName)
+        self._llm = dataComponent.llm
+        self._tokenEstimator.Configure(modelName=self._llm.ModelName)
 
     def OnDestroy(self) -> None:
         """从 BaseAgent 卸载时回调。"""

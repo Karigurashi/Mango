@@ -41,13 +41,18 @@ class ListDirTool(BaseTool):
 
     def _Invoke(self, dirPath: str, recursive: bool = False) -> ToolResult:
         try:
-            if not os.path.isdir(dirPath):
+            try:
+                safeDir = self._SanitizePath(dirPath, self._GetAllowedRoot())
+            except ValueError as exc:
+                return ToolResult.Fail(str(exc), toolName=self.name)
+
+            if not os.path.isdir(safeDir):
                 return ToolResult.Fail(f"Not a directory: {dirPath}", toolName=self.name)
 
             if recursive:
                 lines: list[str] = []
-                for root, dirs, files in os.walk(dirPath):
-                    level = root.replace(dirPath, "").count(os.sep)
+                for root, dirs, files in os.walk(safeDir):
+                    level = root.replace(safeDir, "").count(os.sep)
                     indent = "  " * level
                     base = os.path.basename(root) or root
                     lines.append(f"{indent}{base}/")
@@ -55,10 +60,10 @@ class ListDirTool(BaseTool):
                         lines.append(f"{indent}  {file}")
                 content = "\n".join(lines)
             else:
-                entries = sorted(os.listdir(dirPath))
+                entries = sorted(os.listdir(safeDir))
                 lines = []
                 for entry in entries:
-                    fullPath = os.path.join(dirPath, entry)
+                    fullPath = os.path.join(safeDir, entry)
                     suffix = "/" if os.path.isdir(fullPath) else ""
                     lines.append(f"  {entry}{suffix}")
                 content = f"[Contents of: {dirPath}]\n" + "\n".join(lines)

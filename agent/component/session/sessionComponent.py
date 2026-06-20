@@ -16,6 +16,7 @@ from agent.component.contex.contextMessage import ContextMessage
 from agent.core.baseComponent import IComponent
 from agent.component.memory import MemoryComponent
 from common.const import ERole
+from llm.tokenEstimator import TokenEstimator
 
 if TYPE_CHECKING:
     from agent.core.baseAgent import BaseAgent
@@ -45,6 +46,9 @@ class SessionComponent(IComponent):
         self._compressedUpToTurnIndex: int = -1
         self._forkBaselineCount: int = 0
         self.memory: MemoryComponent | None = None
+        self._compressedMessageIds: set[str] = set()
+        self._tokenEstimator: TokenEstimator = TokenEstimator()
+        self._summaryTokenBudget: int = 500
 
     # ---- IComponent 生命周期 ----
 
@@ -77,12 +81,29 @@ class SessionComponent(IComponent):
     def _ExtractSessionSummary(self) -> str:
         """提取可用于跨会话恢复的会话摘要。"""
         if self._compressedSummary is not None:
-            return self._compressedSummary.content
+            return self._TruncateToTokens(
+                self._compressedSummary.content, self._summaryTokenBudget
+            )
 
         for msg in reversed(self.messages):
             if msg.role == ERole.ASSISTANT and msg.content.strip():
-                return msg.content[:2000]
+                return self._TruncateToTokens(msg.content, self._summaryTokenBudget)
         return ""
+
+    def _TruncateToTokens(self, text: str, budget: int) -> str:
+        """使用 TokenEstimator 判断并按 token 预算截断文本。
+
+        精确编码不可用时退化为每 4 个字符 1 token 的近似。
+        """
+        if not text or budget <= 0:
+            return ""
+        if self._tokenEstimator.Estimate(text) <= budget:
+            return text
+
+        targetChars = max(1, int(budget * 4))
+        if len(text) <= targetChars:
+            return text
+        return text[:targetChars] + "…"
 
     # ---- 消息管理 ----
 
@@ -143,6 +164,7 @@ class SessionComponent(IComponent):
         if msg is None:
             return False
         msg.isCompacted = True
+        self._compressedMessageIds.add(messageId)
         self.updatedAt = time.time()
         return True
 
@@ -150,6 +172,7 @@ class SessionComponent(IComponent):
         """清空所有消息（慎用）。"""
         self.messages.clear()
         self._messageIndex.clear()
+        self._compressedMessageIds.clear()
         self.ClearCompressedSummary()
         self.updatedAt = time.time()
 
@@ -199,6 +222,22 @@ class SessionComponent(IComponent):
         self._compressedSummary = None
         self._compressedUpToTurnIndex = -1
         self.updatedAt = time.time()
+
+    # ---- 统计 ----
+
+    def GetStats(self) -> dict:
+        """返回会话统计信息。
+
+        Returns:
+            包含 ``messageCount``、``compactedCount``、``totalBytes`` 的字典。
+        """
+        return {
+            "messageCount": len(self.messages),
+            "compactedCount": len(self._compressedMessageIds),
+            "totalBytes": sum(
+                len(m.content.encode("utf-8")) for m in self.messages if m.content
+            ),
+        }
 
     # ---- 魔法方法 ----
 

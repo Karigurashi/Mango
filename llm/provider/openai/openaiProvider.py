@@ -25,19 +25,20 @@ class OpenAIProvider(BaseProvider):
     """OpenAI 兼容 Provider，封装 openai 官方 SDK。"""
 
     def __init__(self, model: LLMModel, **kwargs) -> None:
-        super().__init__(model)
+        super().__init__(model, **kwargs)
         self._protocol = OpenAIProtocol()
+        # SDK 层 max_retries=0：重试由框架层 BaseProvider._RetryCallCoreAsync 统一接管
         self._client = openai.OpenAI(
             base_url=self._model.url.rstrip("/"),
             api_key=self._model.apiKey,
-            timeout=self._model.timeout,
-            max_retries=self._model.maxRetries,
+            timeout=self._timeout,
+            max_retries=0,
         )
         self._asyncClient = openai.AsyncOpenAI(
             base_url=self._model.url.rstrip("/"),
             api_key=self._model.apiKey,
-            timeout=self._model.timeout,
-            max_retries=self._model.maxRetries,
+            timeout=self._timeout,
+            max_retries=0,
         )
 
     @property
@@ -246,10 +247,10 @@ class OpenAIProvider(BaseProvider):
             self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
-    #  异步 InvokeAsync
+    #  异步 _InvokeCoreAsync（单次纯调用，重试由 BaseProvider 外层处理）
     # ==================================================================
 
-    async def InvokeAsync(
+    async def _InvokeCoreAsync(
         self,
         messages: list[ChatMessage],
         cancellationToken: Optional[CancellationToken] = None,
@@ -291,24 +292,24 @@ class OpenAIProvider(BaseProvider):
             )
 
             self._AccumulateUsage(usage)
-            self._LogSuccess(rid, "InvokeAsync", t0, usage)
+            self._LogSuccess(rid, "_InvokeCoreAsync", t0, usage)
 
             if rp.onAfterRequest:
                 rp.onAfterRequest(result)
 
             return result
         except asyncio.CancelledError:
-            self._LogCancelled(rid, "InvokeAsync")
+            self._LogCancelled(rid, "_InvokeCoreAsync")
             raise
         except Exception as exc:
-            self._LogError(rid, "InvokeAsync", t0, exc)
+            self._LogError(rid, "_InvokeCoreAsync", t0, exc)
             self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
-    #  异步 StreamAsync
+    #  异步 _StreamCoreAsync（单次纯调用，重试由 BaseProvider 外层处理）
     # ==================================================================
 
-    async def StreamAsync(
+    async def _StreamCoreAsync(
         self,
         messages: list[ChatMessage],
         cancellationToken: Optional[CancellationToken] = None,
@@ -382,14 +383,14 @@ class OpenAIProvider(BaseProvider):
                         yield cc
 
                 if not cancelled:
-                    self._LogSuccess(rid, "StreamAsync", t0, self._totalUsage)
+                    self._LogSuccess(rid, "_StreamCoreAsync", t0, self._totalUsage)
             finally:
                 # 主动关闭底层 HTTP 连接，确保服务端收到 TCP RST 立即停止生成
                 if stream is not None:
                     await stream.close()
         except asyncio.CancelledError:
-            self._LogCancelled(rid, "StreamAsync")
+            self._LogCancelled(rid, "_StreamCoreAsync")
             raise
         except Exception as exc:
-            self._LogError(rid, "StreamAsync", t0, exc)
+            self._LogError(rid, "_StreamCoreAsync", t0, exc)
             self._RaiseLLMError(exc, onError=rp.onError)

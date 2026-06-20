@@ -25,7 +25,7 @@ class GeminiProvider(BaseProvider):
         self._clientKwargs: dict = {
             "api_key": self._model.apiKey,
             "http_options": {
-                "timeout": int(self._model.timeout * 1000),
+                "timeout": int(self._timeout * 1000),
             },
         }
         # 注：google-genai SDK 的 maxRetries 行为因版本而异，
@@ -166,10 +166,10 @@ class GeminiProvider(BaseProvider):
             self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
-    #  异步 InvokeAsync
+    #  异步 _InvokeCoreAsync（单次纯调用，重试由 BaseProvider 外层处理）
     # ==================================================================
 
-    async def InvokeAsync(
+    async def _InvokeCoreAsync(
         self,
         messages: list[ChatMessage],
         cancellationToken: Optional[CancellationToken] = None,
@@ -214,24 +214,24 @@ class GeminiProvider(BaseProvider):
             )
 
             self._AccumulateUsage(usage)
-            self._LogSuccess(rid, "InvokeAsync", t0, usage)
+            self._LogSuccess(rid, "_InvokeCoreAsync", t0, usage)
 
             if rp.onAfterRequest:
                 rp.onAfterRequest(result)
 
             return result
         except asyncio.CancelledError:
-            self._LogCancelled(rid, "InvokeAsync")
+            self._LogCancelled(rid, "_InvokeCoreAsync")
             raise
         except Exception as exc:
-            self._LogError(rid, "InvokeAsync", t0, exc)
+            self._LogError(rid, "_InvokeCoreAsync", t0, exc)
             self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
-    #  异步 StreamAsync
+    #  异步 _StreamCoreAsync（单次纯调用，重试由 BaseProvider 外层处理）
     # ==================================================================
 
-    async def StreamAsync(
+    async def _StreamCoreAsync(
         self,
         messages: list[ChatMessage],
         cancellationToken: Optional[CancellationToken] = None,
@@ -266,7 +266,7 @@ class GeminiProvider(BaseProvider):
 
                 async for chunk in stream:
                     if cancellationToken and cancellationToken.IsCancellationRequested:
-                        self._LogCancelled(rid, "StreamAsync")
+                        self._LogCancelled(rid, "_StreamCoreAsync")
                         cancelled = True
                         break
 
@@ -280,14 +280,14 @@ class GeminiProvider(BaseProvider):
                         yield cc
 
                 if not cancelled:
-                    self._LogSuccess(rid, "StreamAsync", t0, self._totalUsage)
+                    self._LogSuccess(rid, "_StreamCoreAsync", t0, self._totalUsage)
             finally:
                 # 主动关闭底层 gRPC 流，通知服务端取消生成
                 if stream is not None and hasattr(stream, 'aclose'):
                     await stream.aclose()
         except asyncio.CancelledError:
-            self._LogCancelled(rid, "StreamAsync")
+            self._LogCancelled(rid, "_StreamCoreAsync")
             raise
         except Exception as exc:
-            self._LogError(rid, "StreamAsync", t0, exc)
+            self._LogError(rid, "_StreamCoreAsync", t0, exc)
             self._RaiseLLMError(exc, onError=rp.onError)

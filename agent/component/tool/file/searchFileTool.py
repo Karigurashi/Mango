@@ -44,7 +44,12 @@ class SearchFileTool(BaseTool):
 
     def _Invoke(self, pattern: str, rootDir: str = ".") -> ToolResult:
         try:
-            rootPath = Path(rootDir).resolve()
+            try:
+                safeRoot = self._SanitizePath(rootDir, self._GetAllowedRoot())
+            except ValueError as exc:
+                return ToolResult.Fail(str(exc), toolName=self.name)
+
+            rootPath = Path(safeRoot)
             if not rootPath.is_dir():
                 return ToolResult.Fail(f"Not a directory: {rootDir}", toolName=self.name)
 

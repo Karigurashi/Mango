@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 import time
 from typing import Optional
 
@@ -129,13 +130,31 @@ class MemoryStore:
             return None
 
     def WriteFile(self, filePath: str, content: str) -> bool:
-        """写入文件，自动创建父目录。返回是否成功。"""
+        """原子写入文件，自动创建父目录。返回是否成功。
+
+        实现路径：先写入同目录临时文件，再通过 os.replace 原子覆盖目标路径，
+        避免写入中途进程崩溃导致文件被截断为不一致状态。
+        临时文件与目标同目录，保证 os.replace 跸文件系统原子性。
+        """
+        tmpPath: Optional[str] = None
         try:
-            os.makedirs(os.path.dirname(filePath), exist_ok=True)
-            with open(filePath, "w", encoding="utf-8") as f:
-                f.write(content)
+            dirName = os.path.dirname(filePath) or "."
+            os.makedirs(dirName, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=dirName,
+                delete=False, suffix=".tmp",
+            ) as tmp:
+                tmp.write(content)
+                tmpPath = tmp.name
+            os.replace(tmpPath, filePath)
             return True
         except OSError as e:
+            # 写入或 rename 失败：清理临时文件，避免磁盘泄漏
+            if tmpPath and os.path.exists(tmpPath):
+                try:
+                    os.unlink(tmpPath)
+                except OSError:
+                    pass
             Logger.Error(f"MemoryStore.WriteFile failed: {filePath} | {e}")
             return False
 

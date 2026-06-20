@@ -103,7 +103,11 @@ class MemoryIndex:
                 self._entries[em.group(1)] = (currentCategory, em.group(2).strip())
 
     def _Save(self) -> None:
-        """将内存中的条目序列化回 INDEX.md。"""
+        """将内存中的条目序列化回 INDEX.md。
+
+        底层调用 MemoryStore.WriteFile 已使用 tempfile + os.replace 原子写入，
+        避免多协程同时 Upsert 时子进程崩溃造成 INDEX 被截断。
+        """
         from .eMemoryCategory import EMemoryCategory
 
         # 按分类分组

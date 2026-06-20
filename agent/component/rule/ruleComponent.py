@@ -41,6 +41,7 @@ class RuleComponent(IComponent):
 
     def __init__(self) -> None:
         self._rules: dict[str, Rule] = {}
+        self._matchStats: dict[str, int] = {}
 
     # ---- 生命周期 ----
 
@@ -51,6 +52,7 @@ class RuleComponent(IComponent):
     def OnDestroy(self) -> None:
         """从 BaseAgent 卸载时回调，清空所有已注册 Rule。"""
         self._rules.clear()
+        self._matchStats.clear()
 
     # ---- 注册 ----
 
@@ -82,7 +84,35 @@ class RuleComponent(IComponent):
 
     def MatchGlobs(self, filePath: str) -> list[Rule]:
         """返回所有 glob 匹配当前文件路径的 Rule。"""
-        return [r for r in self._rules.values() if r.MatchesGlob(filePath)]
+        matched = [r for r in self._rules.values() if r.MatchesGlob(filePath)]
+        for rule in matched:
+            self._RecordMatch(rule)
+        return matched
+
+    def MatchDescription(self, query: str) -> list[Rule]:
+        """对 DESCRIPTION_MATCH 模式的 Rule 进行关键词匹配。
+
+        将 ``query`` 按非字母数字字符切分为关键词集合，
+        若 Rule.description 中包含 ``query`` 的任意关键词，则视为匹配成功。
+
+        Args:
+            query: 用户查询文本。
+
+        Returns:
+            匹配成功的 DESCRIPTION_MATCH Rule 列表。
+        """
+        keywords = [k for k in re.split(r"\W+", query.lower()) if k]
+        if not keywords:
+            return []
+
+        descriptionRules = self.GetByTriggerMode(ERuleTriggerMode.DESCRIPTION_MATCH)
+        matched: list[Rule] = []
+        for rule in descriptionRules:
+            descLower = rule.description.lower()
+            if any(kw in descLower for kw in keywords):
+                matched.append(rule)
+                self._RecordMatch(rule)
+        return matched
 
     def GetAlwaysApplyRules(self) -> list[Rule]:
         """获取所有始终应用的 Rule。"""
@@ -114,7 +144,20 @@ class RuleComponent(IComponent):
             return []
 
         manualRules = self.GetByTriggerMode(ERuleTriggerMode.MANUAL_INVOKE)
-        return [r for r in manualRules if r.name in candidates]
+        matched = [r for r in manualRules if r.name in candidates]
+        for rule in matched:
+            self._RecordMatch(rule)
+        return matched
+
+    # ---- 统计 ----
+
+    def GetMatchStats(self) -> dict[str, int]:
+        """获取每条 Rule 的累计匹配命中次数副本。"""
+        return dict(self._matchStats)
+
+    def _RecordMatch(self, rule: Rule) -> None:
+        """在规则匹配成功时递增计数。"""
+        self._matchStats[rule.name] = self._matchStats.get(rule.name, 0) + 1
 
     # ---- 批量加载 ----
 

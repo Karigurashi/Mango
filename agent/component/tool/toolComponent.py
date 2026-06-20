@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, TYPE_CHECKING
 
 from agent.core.baseComponent import IComponent
@@ -70,6 +71,9 @@ class ToolComponent(IComponent):
         """实例级工具实例注册表，隔离不同 Agent 的工具实例。"""
         self._defaultTimeout: float | None = 300.0
         """全局默认工具超时秒数，None 表示不设限制。单工具可通过 timeout 类属性覆盖。"""
+        self._executionStats: dict[str, list[float]] = {}
+        """每个工具的执行耗时列表（仅保留最近 100 次）。"""
+        self._executionStatsLimit: int = 100
 
     # ---- 生命周期 ----
 
@@ -199,6 +203,7 @@ class ToolComponent(IComponent):
             )
 
         timeout = self._ResolveTimeout(tool)
+        startTime = time.perf_counter()
 
         try:
             if timeout is not None:
@@ -208,8 +213,12 @@ class ToolComponent(IComponent):
                 )
             else:
                 result = await tool.ExecuteAsync(**toolCall.arguments)
+            elapsed = time.perf_counter() - startTime
+            self._RecordExecution(toolCall.name, elapsed)
             return result.WithToolName(toolCall.name)
         except asyncio.TimeoutError:
+            elapsed = time.perf_counter() - startTime
+            self._RecordExecution(toolCall.name, elapsed)
             Logger.Warning(
                 f"Tool '{toolCall.name}' timed out after {timeout}s"
             )
@@ -218,6 +227,8 @@ class ToolComponent(IComponent):
                 toolName=toolCall.name,
             )
         except Exception as exc:
+            elapsed = time.perf_counter() - startTime
+            self._RecordExecution(toolCall.name, elapsed)
             return ToolResult.Fail(
                 f"Tool '{toolCall.name}' execution failed: {str(exc)}",
                 toolName=toolCall.name,
@@ -304,6 +315,35 @@ class ToolComponent(IComponent):
     def SetDefaultTimeout(self, seconds: float | None) -> None:
         """设置全局默认工具超时（秒），None 表示不设限制。"""
         self._defaultTimeout = seconds
+
+    # ---- 执行统计 ----
+
+    def _RecordExecution(self, toolName: str, elapsed: float) -> None:
+        """记录工具一次调度的耗时，每个工具仅保留最近 ``_executionStatsLimit`` 条。"""
+        bucket = self._executionStats.setdefault(toolName, [])
+        bucket.append(elapsed)
+        excess = len(bucket) - self._executionStatsLimit
+        if excess > 0:
+            del bucket[:excess]
+
+    def GetExecutionStats(self) -> dict[str, dict[str, float]]:
+        """返回每个工具的执行耗时聚合指标。
+
+        Returns:
+            ``{toolName: {count, avg, max, min, last}}`` 结构的字典。
+        """
+        stats: dict[str, dict[str, float]] = {}
+        for name, samples in self._executionStats.items():
+            if not samples:
+                continue
+            stats[name] = {
+                "count": float(len(samples)),
+                "avg": sum(samples) / len(samples),
+                "max": max(samples),
+                "min": min(samples),
+                "last": samples[-1],
+            }
+        return stats
 
     # ---- 魔法方法 ----
 

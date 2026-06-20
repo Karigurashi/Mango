@@ -21,20 +21,21 @@ class AnthropicProvider(BaseProvider):
     """Anthropic Claude Messages API Provider。"""
 
     def __init__(self, model: LLMModel, **kwargs) -> None:
-        super().__init__(model)
+        super().__init__(model, **kwargs)
         self._thinkingBudget = model.thinkingBudget
         self._protocol = AnthropicProtocol()
+        # SDK 层 max_retries=0：重试由框架层 BaseProvider._RetryCallCoreAsync 统一接管
         self._client = anthropic.Anthropic(
             base_url=self._model.url.rstrip("/"),
             api_key=self._model.apiKey,
-            timeout=self._model.timeout,
-            max_retries=self._model.maxRetries,
+            timeout=self._timeout,
+            max_retries=0,
         )
         self._asyncClient = anthropic.AsyncAnthropic(
             base_url=self._model.url.rstrip("/"),
             api_key=self._model.apiKey,
-            timeout=self._model.timeout,
-            max_retries=self._model.maxRetries,
+            timeout=self._timeout,
+            max_retries=0,
         )
 
     @property
@@ -175,10 +176,10 @@ class AnthropicProvider(BaseProvider):
             self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
-    #  异步 InvokeAsync
+    #  异步 _InvokeCoreAsync（单次纯调用，重试由 BaseProvider 外层处理）
     # ==================================================================
 
-    async def InvokeAsync(
+    async def _InvokeCoreAsync(
         self,
         messages: list[ChatMessage],
         cancellationToken: Optional[CancellationToken] = None,
@@ -229,24 +230,24 @@ class AnthropicProvider(BaseProvider):
             )
 
             self._AccumulateUsage(usage)
-            self._LogSuccess(rid, "InvokeAsync", t0, usage)
+            self._LogSuccess(rid, "_InvokeCoreAsync", t0, usage)
 
             if rp.onAfterRequest:
                 rp.onAfterRequest(result)
 
             return result
         except asyncio.CancelledError:
-            self._LogCancelled(rid, "InvokeAsync")
+            self._LogCancelled(rid, "_InvokeCoreAsync")
             raise
         except Exception as exc:
-            self._LogError(rid, "InvokeAsync", t0, exc)
+            self._LogError(rid, "_InvokeCoreAsync", t0, exc)
             self._RaiseLLMError(exc, onError=rp.onError)
 
     # ==================================================================
-    #  异步 StreamAsync
+    #  异步 _StreamCoreAsync（单次纯调用，重试由 BaseProvider 外层处理）
     # ==================================================================
 
-    async def StreamAsync(
+    async def _StreamCoreAsync(
         self,
         messages: list[ChatMessage],
         cancellationToken: Optional[CancellationToken] = None,
@@ -275,7 +276,7 @@ class AnthropicProvider(BaseProvider):
             async with self._asyncClient.messages.stream(**params) as stream:
                 async for event in stream:
                     if cancellationToken and cancellationToken.IsCancellationRequested:
-                        self._LogCancelled(rid, "StreamAsync")
+                        self._LogCancelled(rid, "_StreamCoreAsync")
                         cancelled = True
                         break
 
@@ -303,10 +304,10 @@ class AnthropicProvider(BaseProvider):
 
             # async with 退出时自动关闭底层 SSE 连接，服务端收到 TCP FIN 停止生成
             if not cancelled:
-                self._LogSuccess(rid, "StreamAsync", t0)
+                self._LogSuccess(rid, "_StreamCoreAsync", t0)
         except asyncio.CancelledError:
-            self._LogCancelled(rid, "StreamAsync")
+            self._LogCancelled(rid, "_StreamCoreAsync")
             raise
         except Exception as exc:
-            self._LogError(rid, "StreamAsync", t0, exc)
+            self._LogError(rid, "_StreamCoreAsync", t0, exc)
             self._RaiseLLMError(exc, onError=rp.onError)

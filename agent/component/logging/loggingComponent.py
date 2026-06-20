@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import random
 import time
 from typing import Any, TYPE_CHECKING
 
@@ -22,6 +24,7 @@ from agent.core.baseComponent import IComponent
 from common.logger import Logger
 
 from .eLogEventType import ELogEventType
+from .eLogLevel import ELogLevel
 from .logEvent import LogEvent
 
 if TYPE_CHECKING:
@@ -51,11 +54,17 @@ class LoggingComponent(IComponent):
 
     def __init__(self) -> None:
         self._events: list[LogEvent] = []
+        self._buffer: list[LogEvent] = self._events  # 外部可观测的别名，与 _events 同指
         self._sessionId: str = ""
         self._logDir: str = ".contex/log"
         self._logFormat: str = "TEXT"  # TEXT / JSON
         self._logFlushPerTurn: bool = True
         self._flushed: bool = False
+        self._logLevel: ELogLevel = ELogLevel.INFO
+        self._sampleRate: float = 1.0
+        self._flushInterval: float = 5.0
+        self._flushTask: asyncio.Task | None = None
+        self._stopped: bool = False
 
     # ---- IComponent 生命周期 ----
 
@@ -75,10 +84,72 @@ class LoggingComponent(IComponent):
         if session is not None:
             self._sessionId = session.sessionId[:8]
 
+        # 尝试启动后台定期刷盘任务（仅在有 running loop 时）
+        self._StartFlushTask()
+
     def OnDestroy(self) -> None:
-        """从 BaseAgent 卸载时回调，强制刷新未写出的事件。"""
+        """从 BaseAgent 卸载时回调，取消后台任务并强制刷新未写出的事件。"""
+        self._stopped = True
+        if self._flushTask is not None and not self._flushTask.done():
+            self._flushTask.cancel()
+            self._flushTask = None
         if self._events:
             self.Flush()
+
+    # ---- 后台刷盘 ----
+
+    def _StartFlushTask(self) -> None:
+        """在当前 running loop 中启动定期刷盘任务；无 loop 时静默跳过。"""
+        if self._flushTask is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._flushTask = loop.create_task(self._FlushLoopAsync())
+
+    async def _FlushLoopAsync(self) -> None:
+        """后台协程：按 ``_flushInterval`` 周期将缓冲区刷出。"""
+        try:
+            while not self._stopped:
+                await asyncio.sleep(self._flushInterval)
+                if self._events:
+                    try:
+                        self.Flush()
+                    except Exception as exc:  # 后台任务不能因单次异常退出
+                        Logger.Warning(f"LoggingComponent: periodic flush failed: {exc}")
+        except asyncio.CancelledError:
+            return
+
+    # ---- 过滤与采样 ----
+
+    def SetLogLevel(self, level: ELogLevel) -> None:
+        """设置当前日志过滤阈值，仅记录 ≥ level 的事件。"""
+        self._logLevel = level
+
+    def SetSampleRate(self, rate: float) -> None:
+        """设置采样率 (0.0~1.0)，低于随机值才记录。"""
+        if rate < 0.0:
+            rate = 0.0
+        elif rate > 1.0:
+            rate = 1.0
+        self._sampleRate = rate
+
+    def SetFlushInterval(self, interval: float) -> None:
+        """设置后台刷盘间隔（秒）。"""
+        if interval > 0:
+            self._flushInterval = interval
+
+    def _AppendEvent(self, event: LogEvent, level: ELogLevel) -> None:
+        """统一入口：按级别过滤 + 采样后追加事件。"""
+        if level < self._logLevel:
+            return
+        if self._sampleRate < 1.0 and random.random() >= self._sampleRate:
+            return
+        self._events.append(event)
+        # 首次追加事件时，若后台任务尚未启动且当前处于 running loop，补启动。
+        if self._flushTask is None and not self._stopped:
+            self._StartFlushTask()
 
     # ---- 事件记录方法 ----
 
@@ -105,21 +176,24 @@ class LoggingComponent(IComponent):
             retryCount: 本次重试次数。
             success: 是否成功。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.LLM_CALL,
-            sessionId=self._sessionId,
-            turnIndex=turnIndex,
-            duration=duration,
-            metadata={
-                "model": modelName,
-                "inputTokens": inputTokens,
-                "outputTokens": outputTokens,
-                "totalTokens": inputTokens + outputTokens,
-                "streaming": streaming,
-                "retryCount": retryCount,
-                "success": success,
-            },
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.LLM_CALL,
+                sessionId=self._sessionId,
+                turnIndex=turnIndex,
+                duration=duration,
+                metadata={
+                    "model": modelName,
+                    "inputTokens": inputTokens,
+                    "outputTokens": outputTokens,
+                    "totalTokens": inputTokens + outputTokens,
+                    "streaming": streaming,
+                    "retryCount": retryCount,
+                    "success": success,
+                },
+            ),
+            level=ELogLevel.INFO if success else ELogLevel.ERROR,
+        )
 
     def LogToolExecution(
         self,
@@ -138,17 +212,20 @@ class LoggingComponent(IComponent):
             success: 是否成功。
             resultChars: 结果字符数。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.TOOL_EXECUTION,
-            sessionId=self._sessionId,
-            turnIndex=turnIndex,
-            duration=duration,
-            metadata={
-                "tool": toolName,
-                "success": success,
-                "resultChars": resultChars,
-            },
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.TOOL_EXECUTION,
+                sessionId=self._sessionId,
+                turnIndex=turnIndex,
+                duration=duration,
+                metadata={
+                    "tool": toolName,
+                    "success": success,
+                    "resultChars": resultChars,
+                },
+            ),
+            level=ELogLevel.INFO if success else ELogLevel.ERROR,
+        )
 
     def LogCompaction(
         self,
@@ -171,20 +248,23 @@ class LoggingComponent(IComponent):
             duration: 压缩耗时秒数。
             llmUsed: 是否调用了 LLM 摘要。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.COMPACTION,
-            sessionId=self._sessionId,
-            turnIndex=turnIndex,
-            duration=duration,
-            metadata={
-                "urgency": urgency,
-                "tokensBefore": tokensBefore,
-                "tokensAfter": tokensAfter,
-                "tokensFreed": tokensBefore - tokensAfter,
-                "messagesCompacted": messagesCompacted,
-                "llmUsed": llmUsed,
-            },
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.COMPACTION,
+                sessionId=self._sessionId,
+                turnIndex=turnIndex,
+                duration=duration,
+                metadata={
+                    "urgency": urgency,
+                    "tokensBefore": tokensBefore,
+                    "tokensAfter": tokensAfter,
+                    "tokensFreed": tokensBefore - tokensAfter,
+                    "messagesCompacted": messagesCompacted,
+                    "llmUsed": llmUsed,
+                },
+            ),
+            level=ELogLevel.WARNING,
+        )
 
     def LogStateChange(
         self,
@@ -199,15 +279,18 @@ class LoggingComponent(IComponent):
             fromState: 迁移前状态。
             toState: 迁移后状态。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.STATE_CHANGE,
-            sessionId=self._sessionId,
-            turnIndex=turnIndex,
-            metadata={
-                "from": fromState,
-                "to": toState,
-            },
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.STATE_CHANGE,
+                sessionId=self._sessionId,
+                turnIndex=turnIndex,
+                metadata={
+                    "from": fromState,
+                    "to": toState,
+                },
+            ),
+            level=ELogLevel.INFO,
+        )
 
     def LogRunStart(self, userMessage: str) -> None:
         """记录 Run 启动事件。
@@ -215,13 +298,16 @@ class LoggingComponent(IComponent):
         Args:
             userMessage: 用户输入消息（截断到 100 字符）。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.RUN_START,
-            sessionId=self._sessionId,
-            metadata={
-                "userMessage": userMessage[:100],
-            },
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.RUN_START,
+                sessionId=self._sessionId,
+                metadata={
+                    "userMessage": userMessage[:100],
+                },
+            ),
+            level=ELogLevel.INFO,
+        )
 
     def LogRunEnd(
         self,
@@ -238,16 +324,20 @@ class LoggingComponent(IComponent):
             totalTokens: 总 token 消耗。
             endState: 结束状态（FINISHED/ERROR/CANCELLED）。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.RUN_END,
-            sessionId=self._sessionId,
-            duration=totalDuration,
-            metadata={
-                "totalTurns": totalTurns,
-                "totalTokens": totalTokens,
-                "endState": endState,
-            },
-        ))
+        endLevel = ELogLevel.ERROR if endState.upper() == "ERROR" else ELogLevel.INFO
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.RUN_END,
+                sessionId=self._sessionId,
+                duration=totalDuration,
+                metadata={
+                    "totalTurns": totalTurns,
+                    "totalTokens": totalTokens,
+                    "endState": endState,
+                },
+            ),
+            level=endLevel,
+        )
 
     def LogContextLifecycle(
         self,
@@ -264,16 +354,19 @@ class LoggingComponent(IComponent):
             tokenCount: 当前 token 数。
             messageCount: 当前消息数。
         """
-        self._events.append(LogEvent(
-            eventType=ELogEventType.CONTEXT_LIFECYCLE,
-            sessionId=self._sessionId,
-            turnIndex=turnIndex,
-            metadata={
-                "phase": phase,
-                "tokens": tokenCount,
-                "messages": messageCount,
-            },
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.CONTEXT_LIFECYCLE,
+                sessionId=self._sessionId,
+                turnIndex=turnIndex,
+                metadata={
+                    "phase": phase,
+                    "tokens": tokenCount,
+                    "messages": messageCount,
+                },
+            ),
+            level=ELogLevel.INFO,
+        )
 
     # ---- 自定义事件 ----
 
@@ -292,12 +385,15 @@ class LoggingComponent(IComponent):
         """
         meta = metadata or {}
         meta["name"] = name
-        self._events.append(LogEvent(
-            eventType=ELogEventType.CONTEXT_LIFECYCLE,
-            sessionId=self._sessionId,
-            turnIndex=turnIndex,
-            metadata=meta,
-        ))
+        self._AppendEvent(
+            LogEvent(
+                eventType=ELogEventType.CONTEXT_LIFECYCLE,
+                sessionId=self._sessionId,
+                turnIndex=turnIndex,
+                metadata=meta,
+            ),
+            level=ELogLevel.INFO,
+        )
 
     # ---- AfterTurn 刷新 ----
 

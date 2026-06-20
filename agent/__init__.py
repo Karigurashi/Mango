@@ -11,6 +11,7 @@ from .component.session.sessionComponent import SessionComponent
 from .component.skill.skillComponent import SkillComponent
 from .component.mcp.mcpComponent import McpComponent
 from .component.tool.toolComponent import ToolComponent
+from .component.eventPush.eventPushComponent import EventPushComponent
 from .agent import Agent
 from .agentStreamEvent import AgentStreamEvent, EAgentStreamEventType
 from .component.data.eAgentState import EAgentState
@@ -35,4 +36,5 @@ __all__ = [
     "SkillComponent",
     "McpComponent",
     "ToolComponent",
+    "EventPushComponent",
 ]

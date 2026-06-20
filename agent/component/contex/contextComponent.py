@@ -10,6 +10,7 @@ ContextComponent 不存储任何消息。只负责：
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from agent.core.baseComponent import IComponent
@@ -60,6 +61,9 @@ class ContextComponent(IComponent):
         self._ingestedCount = 0
         self._estimatedTokens = 0
         self._lastColdOffloadTurn = -1  # 上次冷卸载的 turn，避免重复执行
+        # 并发保护：CompactAsync 与 Ingest 共享 _turnIndex 与 Session 消息列表，
+        # 通过 asyncio.Lock 串行化压缩流程，避免并发压缩重入造成状态错乱。
+        self._lock = asyncio.Lock()
 
     # ---- IComponent 生命周期 ----
 
@@ -125,6 +129,9 @@ class ContextComponent(IComponent):
         Returns:
             创建并写入 SessionComponent 的 ContextMessage。
         """
+        # 并发保护：Ingest 为同步方法，单事件循环内 _turnIndex 自增、
+        # _OffloadColdLod2 与 Session.Append 之间无 await 点，天然原子。
+        # 这里整体作为关键区，防止与 CompactAsync 的标记/裁剪交错。
         # USER 消息触发轮次递增（比 count//2 更准确）
         if role == ERole.USER:
             self._turnIndex += 1
@@ -232,7 +239,7 @@ class ContextComponent(IComponent):
             return EContextLodLevel.SUMMARIZABLE
         return EContextLodLevel.DISCARDABLE
 
-    async def AssembleAsync(self, tokenBudget: int | None = None) -> list[ContextMessage]:
+    async def AssembleAsync(self, tokenBudget: int | None = None) -> list[ChatMessage]:
         """从 SessionComponent 组装本次 AI 调用的消息列表。
 
         组装规则：
@@ -280,12 +287,14 @@ class ContextComponent(IComponent):
 
         # 压缩后仍超预算（如 RESIDENT/SUMMARIZABLE 本身过大）：硬兜底，
         # 从最旧的可丢弃消息（DISCARDABLE/EXTERNAL_ONLY）开始剔除，避免直接超长报错。
-        # 被剔除的孤儿工具结果由 Agent 层 _SanitizeToolMessages 统一对齐。
+        # 被剔除的孤儿工具结果由后续 _SanitizeToolMessages 统一对齐。
         if estimated > budget:
             projected, estimated = self._TrimToBudget(projected, budget)
 
+        # 净化工具回合消息：剔除孤儿 tool_calls 与孤儿 TOOL 结果，保证 LLM API 兼容
+        chatMessages = self._SanitizeToolMessages(projected)
         self._estimatedTokens = estimated
-        return projected
+        return chatMessages
 
     def _TrimToBudget(
         self,
@@ -352,6 +361,65 @@ class ContextComponent(IComponent):
 
         return result, finalTokens
 
+    @staticmethod
+    def _SanitizeToolMessages(contextMessages: list) -> list[ChatMessage]:
+        """净化工具回合消息，剔除孤儿 tool_calls 与孤儿 TOOL 结果。
+
+        上下文 LOD 生命周期不对称（assistant 的 tool_calls 为 SUMMARIZABLE 长期保留，
+        而工具结果为 EXTERNAL_ONLY 次轮丢弃）会导致跨轮出现：
+        - assistant 携带 tool_calls 但对应 TOOL 结果已被丢弃（孤儿调用）；
+        - TOOL 结果无任何 assistant 引用（孤儿结果）。
+        二者都会被 OpenAI 以 400 拒绝。此方法在组装后、发送前做一次对齐：
+        仅保留"调用 ID 同时存在 assistant 发起记录与 TOOL 结果"的工具回合，
+        其余 tool_calls 被剥离（保留文本），孤儿 TOOL 结果被丢弃。
+
+        不修改 Session 中存储的原始 ChatMessage，必要时构造新实例。
+
+        Args:
+            contextMessages: AssembleAsync 组装后的 ContextMessage 列表。
+
+        Returns:
+            可安全发送给 LLM 的 ChatMessage 列表。
+        """
+        # 第一遍：收集所有 assistant 消息中的 tool_call ID
+        assistantCallIds: set[str] = set()
+        for cm in contextMessages:
+            msg = cm.chatMessage
+            if msg.role == ERole.ASSISTANT and msg.toolCalls:
+                for tc in msg.toolCalls:
+                    assistantCallIds.add(tc.id)
+
+        # 第二遍：收集所有 tool 消息的 toolCallId
+        toolResultIds: set[str] = set()
+        for cm in contextMessages:
+            msg = cm.chatMessage
+            if msg.role == ERole.TOOL and msg.toolCallId:
+                toolResultIds.add(msg.toolCallId)
+
+        # 第三遍：构建净化后的消息列表
+        sanitized: list[ChatMessage] = []
+        for cm in contextMessages:
+            msg = cm.chatMessage
+            if msg.role == ERole.ASSISTANT and msg.toolCalls:
+                # 过滤孤儿 tool_call：仅保留有对应 TOOL 结果的调用
+                keptCalls = [tc for tc in msg.toolCalls if tc.id in toolResultIds]
+                if not keptCalls:
+                    sanitized.append(ChatMessage(role=msg.role, content=msg.content, cacheControl=msg.cacheControl))
+                elif len(keptCalls) == len(msg.toolCalls):
+                    sanitized.append(msg)
+                else:
+                    sanitized.append(
+                        ChatMessage(role=msg.role, content=msg.content, toolCalls=keptCalls, cacheControl=msg.cacheControl)
+                    )
+            elif msg.role == ERole.TOOL:
+                # 跳过孤儿 TOOL 结果：无对应 assistant 调用记录则丢弃
+                if msg.toolCallId in assistantCallIds:
+                    sanitized.append(msg)
+            else:
+                sanitized.append(msg)
+
+        return sanitized
+
     async def CompactAsync(self, force: bool = False) -> int:
         """触发 LLM 分级压缩，结果写入 SessionComponent 独立压缩摘要字段。
 
@@ -371,46 +439,49 @@ class ContextComponent(IComponent):
         if not force and not self._config.autoCompact:
             return 0
 
-        budget = self._config.effectiveBudget
-        messages = self._session.GetAll()
+        # 并发保护：压缩涉及 LLM 异步调用与多步 Session 回写，
+        # 通过 _lock 串行化，避免多协程并发触发压缩造成状态错乱。
+        async with self._lock:
+            budget = self._config.effectiveBudget
+            messages = self._session.GetAll()
 
-        assembled = self._lodManager.AssembleMessages(messages)
-        estimated = self._tokenEstimator.EstimateMessages(assembled)
+            assembled = self._lodManager.AssembleMessages(messages)
+            estimated = self._tokenEstimator.EstimateMessages(assembled)
 
-        threshold = int(budget * self._config.compactThreshold)
-        if not force and estimated <= threshold:
-            return 0
+            threshold = int(budget * self._config.compactThreshold)
+            if not force and estimated <= threshold:
+                return 0
 
-        beforeTokens = estimated
-        result = await self._lodManager.CompactMessagesAsync(
-            messages, threshold,
-            oldSummary=self._session.CompressedSummary,
-        )
+            beforeTokens = estimated
+            result = await self._lodManager.CompactMessagesAsync(
+                messages, threshold,
+                oldSummary=self._session.CompressedSummary,
+            )
 
-        # 回写 SessionComponent：标记被压缩的原始消息
-        for msgId in result.compactedIds:
-            self._session.MarkCompacted(msgId)
+            # 回写 SessionComponent：标记被压缩的原始消息
+            for msgId in result.compactedIds:
+                self._session.MarkCompacted(msgId)
 
-        # 计算实际被压缩消息的最大 turnIndex（避免覆盖范围过大）
-        compactedTurns = [
-            m.turnIndex for m in messages if m.messageId in set(result.compactedIds)
-        ]
-        compactedMaxTurn = max(compactedTurns) if compactedTurns else -1
+            # 计算实际被压缩消息的最大 turnIndex（避免覆盖范围过大）
+            compactedTurns = [
+                m.turnIndex for m in messages if m.messageId in set(result.compactedIds)
+            ]
+            compactedMaxTurn = max(compactedTurns) if compactedTurns else -1
 
-        # 回写 Session：设置唯一的压缩摘要（独立存储，不追加到 messages）
-        if result.newSummaryMessages:
-            newSummary = result.newSummaryMessages[0]
-            self._session.SetCompressedSummary(newSummary, compactedMaxTurn)
-        else:
-            # 无新摘要但仍有消息被标记压缩（如仅丢弃 LOD2），
-            # 若已有旧摘要则更新其覆盖范围
-            if self._session.CompressedSummary is not None and compactedMaxTurn > self._session.CompressedUpToTurnIndex:
-                self._session.SetCompressedSummary(
-                    self._session.CompressedSummary, compactedMaxTurn
-                )
+            # 回写 Session：设置唯一的压缩摘要（独立存储，不追加到 messages）
+            if result.newSummaryMessages:
+                newSummary = result.newSummaryMessages[0]
+                self._session.SetCompressedSummary(newSummary, compactedMaxTurn)
+            else:
+                # 无新摘要但仍有消息被标记压缩（如仅丢弃 LOD2），
+                # 若已有旧摘要则更新其覆盖范围
+                if self._session.CompressedSummary is not None and compactedMaxTurn > self._session.CompressedUpToTurnIndex:
+                    self._session.SetCompressedSummary(
+                        self._session.CompressedSummary, compactedMaxTurn
+                    )
 
-        afterTokens = self._tokenEstimator.EstimateMessages(result.messages)
-        return beforeTokens - afterTokens
+            afterTokens = self._tokenEstimator.EstimateMessages(result.messages)
+            return beforeTokens - afterTokens
 
     async def AfterTurnAsync(self) -> None:
         """回合结束后收尾。

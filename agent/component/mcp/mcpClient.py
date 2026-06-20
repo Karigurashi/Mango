@@ -96,6 +96,29 @@ class McpStdioClient:
         self._proc = None
         self._initialized = False
 
+    @property
+    def IsAlive(self) -> bool:
+        """检查子进程是否仍存活。
+
+        仅当 _proc 已创建且 returncode 仍为 None（未退出）时返回 True，
+        佛代 CallToolAsync 接返回连接错误时依据此判断是否需要重连。
+        """
+        return self._proc is not None and self._proc.returncode is None
+
+    async def ReconnectAsync(
+        self,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> bool:
+        """终止旧进程并重新启动、握手。
+
+        仅当重新 StartAsync 与 InitializeAsync 都成功时返回 True，
+        避免子进程起了但没谈成协议后调方误以为已可用。
+        """
+        self.Terminate()
+        if not await self.StartAsync(cancellationToken=cancellationToken):
+            return False
+        return await self.InitializeAsync(cancellationToken=cancellationToken)
+
     # ---- 握手与能力 ----
 
     async def InitializeAsync(
@@ -145,9 +168,36 @@ class McpStdioClient:
     ) -> tuple[bool, str]:
         """tools/call 调用指定工具。
 
+        错误恢复：若首次调用检测到连接丢失（进程已退出或返回 None），
+        尝试一次 ReconnectAsync 后重发请求，避免偏远 MCP Server 偊尔崩溃
+        后所有后续工具调用都永久失败。
+
         Returns:
             (是否成功, 文本内容)。
         """
+        success, text = await self._CallToolOnceAsync(toolName, arguments, cancellationToken)
+        if success:
+            return True, text
+
+        # 连接丢失检测：进程已退出或从未启动成功
+        if not self.IsAlive:
+            Logger.Warning(
+                f"MCP[{self.serverName}]: connection lost on tool '{toolName}', "
+                f"trying ReconnectAsync once"
+            )
+            if await self.ReconnectAsync(cancellationToken):
+                return await self._CallToolOnceAsync(toolName, arguments, cancellationToken)
+            return False, f"MCP[{self.serverName}]: reconnect failed for tool '{toolName}'"
+
+        return success, text
+
+    async def _CallToolOnceAsync(
+        self,
+        toolName: str,
+        arguments: dict[str, Any],
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> tuple[bool, str]:
+        """单次 tools/call，不含重连，供 CallToolAsync 复用。"""
         response = await self._RequestAsync(
             "tools/call",
             {"name": toolName, "arguments": arguments},

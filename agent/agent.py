@@ -129,7 +129,7 @@ class Agent(BaseAgent):
     ) -> Iterator[AgentStreamEvent]:
         """同步流式 ReAct 循环（Stream）。"""
         yield from RunAsyncGenerator(
-            self.RunAsync(userMessage, cancellationToken),
+            self.RunStreamAsync(userMessage, cancellationToken),
             timeout=self._dataComp.config.runTimeout or None,
         )
 

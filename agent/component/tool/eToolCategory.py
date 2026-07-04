@@ -21,5 +21,6 @@ class EToolCategory(IntEnum):
     NETWORK = 2
     KNOWLEDGE = 3
     AGENT = 4
-    MCP = 5
-    CUSTOM = 6
+    WORKFLOW = 5
+    MCP = 6
+    CUSTOM = 7

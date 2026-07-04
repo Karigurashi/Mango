@@ -44,7 +44,7 @@ class GeminiProvider(BaseProvider):
         return self._asyncClient
 
     @property
-    def ProviderName(self) -> str:
+    def providerName(self) -> str:
         return "gemini"
 
     def Close(self) -> None:

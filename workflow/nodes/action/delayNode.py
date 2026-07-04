@@ -5,6 +5,7 @@ import asyncio
 from ...core.baseNode import BaseNode, handler
 from ...core.eNodeCategory import ENodeCategory
 from ...core.nodeRegistry import NodeRegistry
+from ...core.workflowMessage import WorkflowMessage
 
 
 @NodeRegistry.Register
@@ -27,7 +28,7 @@ class DelayNode(BaseNode):
         ]
 
     @handler
-    async def Handle(self, message) -> None:
+    async def Handle(self, message: WorkflowMessage) -> None:
         duration = float(getattr(self, "Duration", 1.0))
         await asyncio.sleep(max(0.0, duration))
         await self.context.SendMessageAsync(message)

@@ -1,4 +1,4 @@
-"""文件删除工具 —— 安全删除指定文件。"""
+"""DeleteFile 工具 —— 安全删除文件。"""
 
 from __future__ import annotations
 
@@ -12,49 +12,40 @@ from ..toolComponent import ToolComponent
 
 @ToolComponent.Register
 class DeleteFileTool(BaseTool):
-    """安全删除指定路径的文件。
+    """安全删除文件。只能通过此工具删除，不能使用 shell 命令。
 
     仅删除文件，不删除目录。
     """
 
-    name: str = "delete_file"
-    description: str = (
-        "Delete a file at the given path. "
-        "Only deletes files, not directories. "
-        "Use this to remove temporary files, generated artifacts, or unwanted files."
-    )
+    name: str = "deleteFile"
+    description: str = "Delete a file. ONLY use this, NOT shell commands"
     category: EToolCategory = EToolCategory.FILE
     parameters: dict = {
         "type": "object",
         "properties": {
-            "filePath": {
+            "file_path": {
                 "type": "string",
-                "description": "The absolute path of the file to delete",
+                "description": "Absolute path"
             },
         },
-        "required": ["filePath"],
+        "required": ["file_path"],
     }
 
-    def _Invoke(self, filePath: str) -> ToolResult:
+    def _Invoke(self, file_path: str) -> ToolResult:
         try:
-            try:
-                safePath = self._SanitizePath(filePath, self._GetAllowedRoot())
-            except ValueError as exc:
-                return ToolResult.Fail(str(exc), toolName=self.name)
+            if not os.path.exists(file_path):
+                return ToolResult.Fail(f"File not found: {file_path}", toolName=self.name)
 
-            if not os.path.exists(safePath):
-                return ToolResult.Fail(f"File not found: {filePath}", toolName=self.name)
-
-            if os.path.isdir(safePath):
+            if os.path.isdir(file_path):
                 return ToolResult.Fail(
-                    f"Cannot delete directory: {filePath}. Use shell rm -rf for directories.",
+                    f"Cannot delete directory: {file_path}. Use shell rm -rf for directories.",
                     toolName=self.name,
                 )
 
-            os.remove(safePath)
-            return ToolResult.Ok(f"Successfully deleted: {filePath}", toolName=self.name)
+            os.remove(file_path)
+            return ToolResult.Ok(f"Successfully deleted: {file_path}", toolName=self.name)
 
         except PermissionError:
-            return ToolResult.Fail(f"Permission denied: {filePath}", toolName=self.name)
+            return ToolResult.Fail(f"Permission denied: {file_path}", toolName=self.name)
         except Exception as exc:
-            return ToolResult.Fail(f"Failed to delete '{filePath}': {exc}", toolName=self.name)
+            return ToolResult.Fail(f"Failed to delete '{file_path}': {exc}", toolName=self.name)

@@ -39,7 +39,7 @@ class AnthropicProvider(BaseProvider):
         )
 
     @property
-    def ProviderName(self) -> str:
+    def providerName(self) -> str:
         return "anthropic"
 
     def Close(self) -> None:
@@ -54,10 +54,14 @@ class AnthropicProvider(BaseProvider):
     def _ExtractUsage(usage: object) -> Optional[TokenUsage]:
         if usage is None:
             return None
+        inputTokens = getattr(usage, "input_tokens", 0)
+        outputTokens = getattr(usage, "output_tokens", 0)
         return TokenUsage(
-            promptTokens=getattr(usage, "input_tokens", 0),
-            completionTokens=getattr(usage, "output_tokens", 0),
-            totalTokens=getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0),
+            promptTokens=inputTokens,
+            completionTokens=outputTokens,
+            totalTokens=inputTokens + outputTokens,
+            cacheCreationInputTokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            cacheReadInputTokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
         )
 
     # ==================================================================

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .workflowEdge import WorkflowEdge
 from .eEdgeType import EEdgeType
 from .eNodeCategory import ENodeCategory
-from .nodeRegistry import NodeRegistry
 
 if TYPE_CHECKING:
     from .baseNode import BaseNode
@@ -25,7 +24,6 @@ class WorkflowGraph:
     def __init__(self) -> None:
         self._nodes: dict[int, "BaseNode"] = {}
         self._edges: list[WorkflowEdge] = []
-        self._nodePositions: dict[int, dict[str, float]] = {}
         self._autoIdCounter: int = -1
 
     # ---- 自动 ID 节点添加（程序化使用，负 ID 区别于 JSON 端配置） ----
@@ -44,7 +42,8 @@ class WorkflowGraph:
         nodeId = self._autoIdCounter
         self._autoIdCounter -= 1
         self._nodes[nodeId] = executor
-        self._nodePositions[nodeId] = {"x": x, "y": y}
+        executor.x = x
+        executor.y = y
         return nodeId
 
     # ---- 节点管理 ----
@@ -58,13 +57,13 @@ class WorkflowGraph:
     ) -> "WorkflowGraph":
         """添加 BaseNode 实例到图中（需显式指定 int ID）。"""
         self._nodes[nodeId] = executor
-        self._nodePositions[nodeId] = {"x": x, "y": y}
+        executor.x = x
+        executor.y = y
         return self
 
     def RemoveNode(self, nodeId: int) -> "WorkflowGraph":
         """移除节点及其关联的所有边。"""
         self._nodes.pop(nodeId, None)
-        self._nodePositions.pop(nodeId, None)
         self._edges = [
             e for e in self._edges
             if e.fromNodeId != nodeId and e.toNodeId != nodeId
@@ -88,6 +87,13 @@ class WorkflowGraph:
         """获取所有节点 ID。"""
         return list(self._nodes.keys())
 
+    def GetNodePosition(self, nodeId: int) -> tuple[float, float]:
+        """获取节点坐标 (x, y)，不存在返回 (0, 0)。"""
+        node = self._nodes.get(nodeId)
+        if node is None:
+            return (0.0, 0.0)
+        return (node.x, node.y)
+
     @property
     def NodeCount(self) -> int:
         """图中节点数量。"""
@@ -108,7 +114,8 @@ class WorkflowGraph:
             toNodeId: 目标节点 ID。
             edgeType: 边类型 int 值，默认 OUT(0)。
         """
-        self._edges.append(WorkflowEdge(fromNodeId, toNodeId, edgeType))
+        edge = WorkflowEdge(fromNodeId, toNodeId, edgeType)
+        self._edges.append(edge)
         return self
 
     def AddEdgeObj(self, edge: WorkflowEdge) -> "WorkflowGraph":
@@ -118,7 +125,8 @@ class WorkflowGraph:
 
     def RemoveEdge(self, edge: WorkflowEdge) -> "WorkflowGraph":
         """移除指定边。"""
-        self._edges = [e for e in self._edges if e != edge]
+        if edge in self._edges:
+            self._edges.remove(edge)
         return self
 
     def GetEdgesFrom(self, nodeId: int) -> list[WorkflowEdge]:
@@ -150,68 +158,14 @@ class WorkflowGraph:
 
     def GetEntryNodes(self) -> list[int]:
         """查找所有无入边的 Action 类型节点（工作流入门）。"""
+        targetIds = {e.toNodeId for e in self._edges}
         entryNodes: list[int] = []
-        allTargets = {e.toNodeId for e in self._edges}
         for nid, node in self._nodes.items():
             if node.category != ENodeCategory.ACTION:
                 continue
-            if nid not in allTargets:
+            if nid not in targetIds:
                 entryNodes.append(nid)
         return entryNodes
-
-    # ---- 序列化 ----
-
-    def ToDict(self) -> dict:
-        """导出为可序列化的字典。节点 ID 为 int，name 随实例属性序列化。"""
-        nodesData: list[dict] = []
-        for nid, node in self._nodes.items():
-            nodeDict: dict = {
-                "id": nid,
-                "type": node.nodeType,
-                "x": self._nodePositions.get(nid, {}).get("x", 0),
-                "y": self._nodePositions.get(nid, {}).get("y", 0),
-            }
-            # 用户自定义 name（仅非 None 时导出）
-            if node.name is not None:
-                nodeDict["name"] = node.name
-            # 可配置参数（排除元数据和 name）
-            config = {
-                k: v for k, v in vars(node).items()
-                if not k.startswith("_") and k not in (
-                    "nodeType", "category", "displayName", "description", "name"
-                )
-            } or None
-            if config:
-                nodeDict["config"] = config
-            nodesData.append(nodeDict)
-
-        return {
-            "nodes": nodesData,
-            "edges": [e.ToDict() for e in self._edges],
-        }
-
-    @staticmethod
-    def FromDict(data: dict) -> "WorkflowGraph":
-        """从字典反序列化。节点 ID 解析为 int。"""
-        graph = WorkflowGraph()
-        for nodeData in data.get("nodes", []):
-            nodeClass = NodeRegistry.Get(nodeData["type"])
-            if nodeClass is None:
-                raise ValueError(f"Unknown node type '{nodeData['type']}'")
-            config = dict(nodeData.get("config") or {})
-            # 从顶层提取 name 字段
-            if "name" in nodeData and nodeData["name"] is not None:
-                config["name"] = nodeData["name"]
-            instance = nodeClass(**config)
-            graph.AddNode(
-                nodeId=int(nodeData["id"]),
-                executor=instance,
-                x=float(nodeData.get("x", 0)),
-                y=float(nodeData.get("y", 0)),
-            )
-        for edgeData in data.get("edges", []):
-            graph.AddEdgeObj(WorkflowEdge.FromDict(edgeData))
-        return graph
 
     def __repr__(self) -> str:
         return f"WorkflowGraph(nodes={len(self._nodes)}, edges={len(self._edges)})"

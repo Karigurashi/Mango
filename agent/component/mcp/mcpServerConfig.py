@@ -5,9 +5,19 @@
 
 from __future__ import annotations
 
+import os
+import re
 from typing import Any
 
 from .eMcpTransport import EMcpTransport
+
+# 环境变量占位符正则: ${VAR_NAME}
+_ENV_PATTERN = re.compile(r"\$\{(\w+)\}")
+
+
+def _ReplaceEnvVar(m: re.Match) -> str:
+    """re.sub 回调：将 ${VAR} 替换为环境变量值，无对应值时保留原样。"""
+    return os.environ.get(m.group(1), m.group(0))
 
 
 class McpServerConfig:
@@ -50,7 +60,7 @@ class McpServerConfig:
         """导出为 .mcp.json 兼容的字典格式。"""
         result: dict[str, Any] = {
             "name": self.name,
-            "type": self.transport.value,
+            "type": self.transport.ToLabel(),
             "scope": self.scope,
             "enabled": self.enabled,
         }
@@ -72,10 +82,7 @@ class McpServerConfig:
     def FromDict(data: dict[str, Any]) -> "McpServerConfig":
         """从字典反序列化（兼容 .mcp.json 格式）。"""
         transportRaw = data.get("type", data.get("transport", "stdio"))
-        try:
-            transport = EMcpTransport(transportRaw)
-        except ValueError:
-            transport = EMcpTransport.STDIO
+        transport = EMcpTransport.FromLabel(transportRaw)
 
         return McpServerConfig(
             name=data.get("name", ""),
@@ -107,15 +114,9 @@ class McpServerConfig:
 
         从系统环境中读取实际值替换，占位符无对应值时保留原样。
         """
-        import os
-        import re
-
-        resolved = {}
-        pattern = re.compile(r"\$\{(\w+)\}")
+        resolved: dict[str, str] = {}
         for key, value in self.env.items():
-            def _replace(m: re.Match) -> str:
-                return os.environ.get(m.group(1), m.group(0))
-            resolved[key] = pattern.sub(_replace, value)
+            resolved[key] = _ENV_PATTERN.sub(_ReplaceEnvVar, value)
         return resolved
 
     def IsStdio(self) -> bool:
@@ -135,6 +136,6 @@ class McpServerConfig:
         else:
             detail = f"url={self.url!r}"
         return (
-            f"McpServerConfig(name={self.name!r}, transport={self.transport.value}, "
+            f"McpServerConfig(name={self.name!r}, transport={self.transport.ToLabel()}, "
             f"{detail}, scope={self.scope!r}, enabled={self.enabled})"
         )

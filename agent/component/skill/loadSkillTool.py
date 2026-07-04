@@ -26,19 +26,15 @@ class LoadSkillTool(BaseTool):
     确保 LLM 在执行过程中始终保留 Skill 的核心工作流指令。
     """
 
-    name = "load_skill"
-    description = (
-        "Load a skill's full instructions by name. "
-        "Call this when a skill's description suggests it is relevant "
-        "to the current task. Returns the skill's complete SOP."
-    )
+    name = "loadSkill"
+    description = "Load skill full content by name"
     category = EToolCategory.KNOWLEDGE
     parameters = {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The name of the skill to load.",
+                "description": "skill name",
             },
         },
         "required": ["name"],

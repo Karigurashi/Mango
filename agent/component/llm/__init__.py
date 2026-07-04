@@ -1,3 +1,3 @@
-from .llmComponent import LLMComponent, MessageInput
+from .llmComponent import LLMComponent
 
-__all__ = ["LLMComponent", "MessageInput"]
+__all__ = ["LLMComponent"]

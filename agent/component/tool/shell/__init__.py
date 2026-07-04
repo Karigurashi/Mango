@@ -1,5 +1,6 @@
 """Shell 命令执行工具。"""
 
-from .bashTool import BashTool
+from .shellTool import ShellTool
+from .getTerminalOutputTool import GetTerminalOutputTool
 
-__all__ = ["BashTool"]
+__all__ = ["ShellTool", "GetTerminalOutputTool"]

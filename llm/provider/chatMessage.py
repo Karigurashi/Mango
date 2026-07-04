@@ -55,7 +55,7 @@ class ChatMessage:
         content: 文本内容（简单场景）或 ContentBlock 列表（多模态场景）。
         toolCalls: assistant 发起的工具调用列表。
         toolCallId: tool 角色消息对应的调用 ID。
-        cacheControl: 标记此消息可被 Prompt Caching（Anthropic）。
+        cacheControl: 标记此消息可被 Prompt Caching。
     """
 
     role: ERole
@@ -132,17 +132,40 @@ class TokenUsage:
         promptTokens: 输入 token 数。
         completionTokens: 输出 token 数。
         totalTokens: 总计。
+        cacheCreationInputTokens: Prompt Caching 首次写入的 token 数。
+        cacheReadInputTokens: Prompt Caching 命中读取的 token 数。
     """
 
     promptTokens: int = 0
     completionTokens: int = 0
     totalTokens: int = 0
+    cacheCreationInputTokens: int = 0
+    cacheReadInputTokens: int = 0
+
+    @property
+    def cacheHit(self) -> bool:
+        """本次调用是否命中 Prompt Caching。"""
+        return self.cacheReadInputTokens > 0
+
+    @property
+    def cacheCreated(self) -> bool:
+        """本次调用是否创建了新的 Prompt Cache。"""
+        return self.cacheCreationInputTokens > 0
+
+    @property
+    def cacheHitRate(self) -> float:
+        """缓存命中率（0-100），cacheReadInputTokens / promptTokens * 100。"""
+        if self.promptTokens <= 0:
+            return 0.0
+        return self.cacheReadInputTokens / self.promptTokens * 100.0
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         return TokenUsage(
             promptTokens=self.promptTokens + other.promptTokens,
             completionTokens=self.completionTokens + other.completionTokens,
             totalTokens=self.totalTokens + other.totalTokens,
+            cacheCreationInputTokens=self.cacheCreationInputTokens + other.cacheCreationInputTokens,
+            cacheReadInputTokens=self.cacheReadInputTokens + other.cacheReadInputTokens,
         )
 
 

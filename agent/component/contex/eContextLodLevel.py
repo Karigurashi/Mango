@@ -9,7 +9,7 @@ class EContextLodLevel(IntEnum):
     Attributes:
         RESIDENT (0): 常驻不压缩，不可丢弃（System Prompt、核心指令）。
         SUMMARIZABLE (1): 可压缩为摘要，不可丢弃（用户偏好、重要决策）。
-        DISCARDABLE (2): 可压缩，token 不足时可丢弃（旧工具结果、思考过程）。
+        DISCARDABLE (2): 可落盘为路径引用，不参与 LLM 摘要（旧工具结果、思考过程）。
         EXTERNAL_ONLY (3): 当轮注入、次轮丢弃（Skill ref、超大工具结果）。
     """
 
@@ -19,8 +19,8 @@ class EContextLodLevel(IntEnum):
     EXTERNAL_ONLY = 3
 
     def CanCompress(self) -> bool:
-        """是否可压缩为摘要。LOD 1/2 可压缩。"""
-        return self in (EContextLodLevel.SUMMARIZABLE, EContextLodLevel.DISCARDABLE)
+        """是否可 LLM 摘要。仅 LOD 1 可摘要，LOD 2 走落盘。"""
+        return self == EContextLodLevel.SUMMARIZABLE
 
     def CanDiscard(self) -> bool:
         """是否可在 token 不足时丢弃。LOD 2/3 可丢弃。"""

@@ -7,13 +7,11 @@
 handler 方法签名仅需 ``(self, message)``，无需手动传递 ctx。
 """
 
-from __future__ import annotations
-
 import inspect
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import Any, Callable, Optional
 
-if TYPE_CHECKING:
-    from .workflowContext import WorkflowContext
+from .eNodeCategory import ENodeCategory
+from .workflowContext import WorkflowContext
 
 # ---- handler 装饰器 ----
 
@@ -98,14 +96,14 @@ class BaseNode:
     上下文通过 ``self.context`` 访问::
 
         @handler
-        async def Handle(self, message) -> None:
+        async def Handle(self, message: WorkflowMessage) -> None:
             await self.context.SendMessageAsync(message)
     """
 
     nodeType: str = ""
     """节点类型标识，格式 ``"Category/Name"``。"""
 
-    category: "ENodeCategory | None" = None
+    category: ENodeCategory | None = None
     """节点所属分类。"""
 
     displayName: str = ""
@@ -114,17 +112,26 @@ class BaseNode:
     description: str = ""
     """节点功能描述。"""
 
+    x: float = 0.0
+    """节点在画布中的 X 坐标，由 WorkflowGraph.AddNode/AddNodeAuto 写入。"""
+
+    y: float = 0.0
+    """节点在画布中的 Y 坐标，由 WorkflowGraph.AddNode/AddNodeAuto 写入。"""
+
     name: str | None = None
     """用户自定义节点名称，None 则使用 displayName。
 
     通过 ``__init__(name="MyNode", ...)`` 设置，或在前端属性面板中编辑。
     """
 
-    context: Optional["WorkflowContext"] = None
+    context: Optional[WorkflowContext] = None
     """执行上下文，由 WorkflowExecutor 在 handler 调用前注入。
 
     handler 方法中通过 ``self.context`` 访问，无需作为参数传递。
     """
+
+    _handlersCache: dict[type | None, Callable] | None = None
+    """类级 handler 缓存，_GetHandlers() 首次调用后填充，避免每次执行的反射扫描。"""
 
     def __init__(self, **config: Any) -> None:
         """初始化节点实例，参数直接设置为实例属性。
@@ -159,11 +166,14 @@ class BaseNode:
 
     @classmethod
     def _GetHandlers(cls) -> dict[type | None, Callable]:
-        """获取所有 @handler 方法，按 input type 索引。
+        """获取所有 @handler 方法，按 input type 索引（类级缓存，避免每次执行反射扫描）。
 
         Returns:
             ``{inputType: handlerMethod}`` 字典，key 为 None 表示默认 handler。
         """
+        if cls._handlersCache is not None:
+            return cls._handlersCache
+
         handlers: dict[type | None, Callable] = {}
         for name in dir(cls):
             if name.startswith("_"):
@@ -174,6 +184,8 @@ class BaseNode:
             if hasattr(attr, _HANDLER_ATTR):
                 inputType = _GetHandlerInputType(attr)
                 handlers[inputType] = attr
+
+        cls._handlersCache = handlers
         return handlers
 
     # ---- 可视化元数据 ----
@@ -191,7 +203,3 @@ class BaseNode:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(nodeType={self.nodeType!r})"
-
-
-# 延迟导入避免循环依赖
-from .eNodeCategory import ENodeCategory  # noqa: E402

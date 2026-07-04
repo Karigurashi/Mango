@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from typing import Any, Optional
 
 from common.cancellationToken import CancellationToken
@@ -21,6 +22,7 @@ from common.logger import Logger
 _STREAM_LIMIT = 16 * 1024 * 1024
 _PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_READ_TIMEOUT = 120.0  # 单次 MCP 请求读取超时秒数
+_STDERR_LOG_INTERVAL = 10.0     # stderr 日志输出最小间隔（秒），避免高频日志刷屏
 
 
 class McpStdioClient:
@@ -281,9 +283,16 @@ class McpStdioClient:
             pass
 
     async def _DrainStderrAsync(self) -> None:
-        """持续排空 stderr，避免管道缓冲写满导致子进程阻塞。"""
+        """持续排空 stderr，避免管道缓冲写满导致子进程阻塞。
+
+        使用时间窗口聚合：每 _STDERR_LOG_INTERVAL 秒最多输出一次日志，
+        累积行数和最近内容，避免高频 stderr 刷屏。
+        """
         if self._proc is None or self._proc.stderr is None:
             return
+        lastLog = 0.0
+        count = 0
+        lastLine = ""
         while True:
             try:
                 line = await self._proc.stderr.readline()
@@ -291,7 +300,20 @@ class McpStdioClient:
                 return
             if not line:
                 return
-            Logger.Debug(f"MCP[{self.serverName}] stderr: {line.decode('utf-8', 'replace').rstrip()}")
+            count += 1
+            lastLine = line.decode("utf-8", "replace").rstrip()
+            now = time.monotonic()
+            if now - lastLog >= _STDERR_LOG_INTERVAL:
+                if count == 1:
+                    Logger.Debug(f"MCP[{self.serverName}] stderr: {lastLine}")
+                else:
+                    Logger.Debug(
+                        f"MCP[{self.serverName}] stderr ({count} lines): "
+                        f"last: {lastLine}"
+                    )
+                count = 0
+                lastLine = ""
+                lastLog = now
 
     @staticmethod
     def _ExtractContentText(content: Any) -> str:

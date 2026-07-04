@@ -59,12 +59,12 @@ class BaseProvider(BaseLLM):
     # ———— 元信息 ————
     @property
     @abstractmethod
-    def ProviderName(self) -> str:
+    def providerName(self) -> str:
         """Provider 标识，如 'openai'、'anthropic'。"""
         ...
 
     @property
-    def ModelName(self) -> str:
+    def modelName(self) -> str:
         return self._model.modelName
 
     # ———— 工具绑定 ————
@@ -84,7 +84,7 @@ class BaseProvider(BaseLLM):
 
     # ———— Token 累计 ————
     @property
-    def TotalUsage(self) -> TokenUsage:
+    def totalUsage(self) -> TokenUsage:
         return self._totalUsage
 
     def ResetUsage(self) -> None:
@@ -102,23 +102,36 @@ class BaseProvider(BaseLLM):
     def _LogSuccess(
         self, rid: str, method: str, t0: float, usage: Optional[TokenUsage] = None,
     ) -> None:
-        dur = int((time.monotonic() - t0) * 1000)
-        prompt = usage.promptTokens if usage else 0
-        completion = usage.completionTokens if usage else 0
+        durS = (time.monotonic() - t0)
+        if usage is None:
+            Logger.Info(
+                "rid=%s %s %s/%s dur=%.1fs",
+                rid, method, self.providerName, self._model.modelName, durS,
+            )
+            return
+        promptK = usage.promptTokens / 1000.0
+        completionK = usage.completionTokens / 1000.0
+        cacheHitRate = round(usage.cacheReadInputTokens / usage.promptTokens * 100, 1) if usage.promptTokens > 0 else 0.0
+        cacheCreateK = usage.cacheCreationInputTokens / 1000.0 if usage.cacheCreationInputTokens > 0 else 0.0
+        cacheInfo = ""
+        if usage.cacheReadInputTokens > 0:
+            cacheInfo = f" cache_hit={cacheHitRate}%"
+        if usage.cacheCreationInputTokens > 0:
+            cacheInfo += f" cache_create={cacheCreateK:.1f}k"
         Logger.Info(
-            "rid=%s %s %s/%s dur=%dms tokens_in=%d tokens_out=%d",
-            rid, method, self.ProviderName, self._model.modelName,
-            dur, prompt, completion,
+            "rid=%s %s %s/%s dur=%.1fs tokens_in=%.1fk tokens_out=%.1fk%s",
+            rid, method, self.providerName, self._model.modelName,
+            durS, promptK, completionK, cacheInfo,
         )
 
     def _LogError(
         self, rid: str, method: str, t0: float, exc: Exception,
     ) -> None:
-        dur = int((time.monotonic() - t0) * 1000)
+        durS = (time.monotonic() - t0)
         Logger.Error(
-            "rid=%s %s %s/%s dur=%dms error=%s",
-            rid, method, self.ProviderName, self._model.modelName,
-            dur, str(exc)[:200],
+            "rid=%s %s %s/%s dur=%.1fs error=%s",
+            rid, method, self.providerName, self._model.modelName,
+            durS, str(exc)[:200],
         )
 
     def _RaiseLLMError(
@@ -135,7 +148,7 @@ class BaseProvider(BaseLLM):
             onError(exc)
         raise LLMError(
             str(exc),
-            provider=self.ProviderName, model=self._model.modelName,
+            provider=self.providerName, model=self._model.modelName,
         ) from exc
 
     # ———— 取消检查与超时包装 ————
@@ -158,7 +171,7 @@ class BaseProvider(BaseLLM):
         except asyncio.TimeoutError:
             raise LLMError(
                 f"Request timed out after {timeout}s",
-                provider=self.ProviderName, model=self._model.modelName,
+                provider=self.providerName, model=self._model.modelName,
             )
 
     @staticmethod

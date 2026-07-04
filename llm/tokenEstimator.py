@@ -119,17 +119,34 @@ class TokenEstimator:
         """估算单条消息的 token 数（含 role/metadata 开销）。
 
         msg 需具备 .content 属性（duck-type，兼容 ContextMessage 等）。
-        若 msg 暴露 GetTokenEstimate/SetTokenEstimate（如 ContextMessage），
-        则复用其缓存，避免长会话每轮对同一内容重复编码（消除 O(n²) 估算开销）。
-        """
-        cached = msg.GetTokenEstimate() if hasattr(msg, "GetTokenEstimate") else None
-        if cached is not None:
-            return cached
 
-        value = self._overheadPerMessage + self.Estimate(msg.content)
-        if hasattr(msg, "SetTokenEstimate"):
-            msg.SetTokenEstimate(value)
-        return value
+        计入所有协议层字段：content、toolCalls（JSON 序列化）、toolCallId、
+        以及固定协议开销。
+        """
+        tokens = self._overheadPerMessage
+        tokens += self.Estimate(msg.content) if msg.content else 0
+
+        # Assistant 消息携带的工具调用 JSON 结构（对标 ChatMessage.ToOpenAI 序列化）
+        toolCalls = getattr(msg, "toolCalls", None)
+        if toolCalls:
+            import json
+            for tc in toolCalls:
+                tcJson = json.dumps({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                    },
+                }, ensure_ascii=False)
+                tokens += self.Estimate(tcJson)
+
+        # Tool 消息携带的 tool_call_id 字段
+        toolCallId = getattr(msg, "toolCallId", "")
+        if toolCallId:
+            tokens += self.Estimate(toolCallId)
+
+        return tokens
 
     def EstimateMessages(self, messages: list) -> int:
         """估算消息列表的总 token 数。"""

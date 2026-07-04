@@ -9,9 +9,8 @@
 
 from __future__ import annotations
 
-import os
 from abc import ABC
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from llm.provider.chatMessage import ToolSpec
 
@@ -19,6 +18,9 @@ from agent.component.contex.eContextLodLevel import EContextLodLevel
 
 from .eToolCategory import EToolCategory
 from .toolResult import ToolResult
+
+if TYPE_CHECKING:
+    from agent.core.baseAgent import BaseAgent
 
 
 class BaseTool(ABC):
@@ -78,19 +80,34 @@ class BaseTool(ABC):
     例如：文件读取 30s、网络请求 60s、Shell 命令 300s。
     """
 
-    resultLodLevel: EContextLodLevel | None = EContextLodLevel.EXTERNAL_ONLY
-    """工具结果注入上下文的 LOD 等级，默认 EXTERNAL_ONLY（当轮注入、次轮丢弃）。
+    resultLodLevel: EContextLodLevel | None = EContextLodLevel.DISCARDABLE
+    """工具结果注入上下文的 LOD 等级，默认 DISCARDABLE（可压缩可丢弃）。
 
     子类覆盖以控制结果持久化策略：
     - SUMMARIZABLE (LOD1)：可压缩不可丢弃（如 load_skill 返回的 SOP）。
-    - DISCARDABLE (LOD2)：可压缩可丢弃（旧工具结果）。
-    - EXTERNAL_ONLY (LOD3)：当轮注入、次轮丢弃（默认值）。
+    - DISCARDABLE (LOD2)：可压缩可丢弃（旧工具结果，默认值）。
+    - EXTERNAL_ONLY (LOD3)：当轮注入、次轮丢弃。
     """
 
     skipPersist: bool = False
     """是否跳过大结果落盘。子类覆盖为 True 表示结果已在磁盘上无需二次落盘。
 
     例如：read_file 读取的文件本身已在磁盘，不需要再写入 ContentStore。
+    """
+
+    _agent: BaseAgent | None = None
+    """ToolComponent 在调度前自动注入的 Agent 引用。
+
+    工具可在 _Invoke / _InvokeAsync 中通过 self._agent 获取当前 Agent 实例，
+    进而通过 GetComponent() 访问其他组件（如 Session、Context、EventPush 等）。
+    无需子类声明此字段。
+    """
+
+    _cachedToolSpec: ToolSpec | None = None
+    """ToolSpec 类级缓存，避免每轮 ReAct 重复分配。
+
+    name/description/parameters 均为类级常量，运行时不可变，安全缓存。
+    首次 ToToolSpec() 调用后填充，后续直接返回缓存实例。
     """
 
     # ---- 子类覆盖: 执行逻辑 ----
@@ -145,16 +162,19 @@ class BaseTool(ABC):
     # ---- LLM 工具描述转换 ----
 
     def ToToolSpec(self) -> ToolSpec:
-        """转换为 LLM 统一工具描述（ToolSpec）。
+        """转换为 LLM 统一工具描述（ToolSpec），首次调用后类级缓存。
 
         Returns:
             ToolSpec 对象，可直接传给 LLMClient.BindTools()。
         """
-        return ToolSpec(
-            name=self.name,
-            description=self.description,
-            parameters=self.parameters,
-        )
+        cls = type(self)
+        if cls._cachedToolSpec is None:
+            cls._cachedToolSpec = ToolSpec(
+                name=self.name,
+                description=self.description,
+                parameters=self.parameters,
+            )
+        return cls._cachedToolSpec
 
     @classmethod
     def GetToolInfo(cls) -> dict[str, Any]:
@@ -166,38 +186,14 @@ class BaseTool(ABC):
             "parameters": cls.parameters,
         }
 
-    # ---- 安全工具方法 ----
+    # ---- 生命周期钩子 ----
 
-    @staticmethod
-    def _SanitizePath(path: str, allowedRoot: str) -> str:
-        """规范化路径并验证在 allowedRoot 内，防止路径遍历攻击。
+    def OnDestroy(self) -> None:
+        """工具被卸载时的清理回调，子类覆盖以释放资源。
 
-        Args:
-            path: 待校验的原始路径（可为相对或绝对）。
-            allowedRoot: 允许的根目录（绝对路径）。
-
-        Returns:
-            规范化后的绝对路径。
-
-        Raises:
-            ValueError: 路径越界（解析后逸出 allowedRoot）。
+        例如 ShellTool 覆盖此方法 kill 残留后台进程。
         """
-        resolved = os.path.realpath(os.path.abspath(path))
-        root = os.path.realpath(os.path.abspath(allowedRoot))
-        if not resolved.startswith(root + os.sep) and resolved != root:
-            raise ValueError(
-                f"Path traversal blocked: {path} resolves outside allowed root"
-            )
-        return resolved
-
-    @staticmethod
-    def _GetAllowedRoot() -> str:
-        """获取路径校验的允许根目录。
-
-        当前实现：返回 os.getcwd() 作为 fallback。
-        Tool 实例若持有 Agent 引用，可在子类覆盖以返回 AgentConfig.workspaceRoot。
-        """
-        return os.getcwd()
+        pass
 
     # ---- 魔法方法 ----
 

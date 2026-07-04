@@ -25,7 +25,7 @@ class Logger:
         cls._instance = logging.getLogger("Brain")
         cls._instance.setLevel(logging.DEBUG)
         if not cls._instance.handlers:
-            handler = logging.StreamHandler(sys.stdout)
+            handler = logging.StreamHandler(sys.stderr)
             handler.setLevel(logging.DEBUG)
             fmt = logging.Formatter(
                 "[%(asctime)s] [%(levelname)-5s] [%(name)s] %(message)s",

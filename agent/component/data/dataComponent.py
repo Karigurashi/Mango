@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import copy
+
 from agent.core.baseComponent import IComponent
 from common.logger import Logger
 from .agentConfig import AgentConfig
@@ -25,10 +27,15 @@ class DataComponent(IComponent):
         config: Agent 运行时配置（循环行为、Token 预算、上下文引擎、重试策略等）。
         state: Agent 当前运行状态（通过 setter 校验合法转移）。
         llm: 底层 BaseLLM 实例。
+        agentId: Agent 自增标识，每次实例化自动递增。
     """
 
+    _nextAgentId: int = 0
+
     def __init__(self) -> None:
-        self._config: AgentConfig = AgentConfig.Default()
+        DataComponent._nextAgentId += 1
+        self._agentId: int = DataComponent._nextAgentId
+        self._config: AgentConfig = copy.copy(AgentConfig.DEFAULT)
         self._llm: BaseLLM | None = None
         self._state: EAgentState = EAgentState.IDLE
 
@@ -70,6 +77,11 @@ class DataComponent(IComponent):
                 )
         self._state = newState
 
+    @property
+    def agentId(self) -> int:
+        """Agent 自增标识，只读。"""
+        return self._agentId
+
     # ---- 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
@@ -89,6 +101,5 @@ class DataComponent(IComponent):
     def __repr__(self) -> str:
         return (
             f"DataComponent(maxTurns={self._config.maxTurns}, "
-            f"tokenBudget={self._config.tokenBudget}, "
-            f"autoCompact={self._config.autoCompact})"
+            f"tokenBudget={self._config.tokenBudget})"
         )

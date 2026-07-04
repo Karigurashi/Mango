@@ -3,6 +3,7 @@
 from ...core.baseNode import BaseNode, handler
 from ...core.eNodeCategory import ENodeCategory
 from ...core.nodeRegistry import NodeRegistry
+from ...core.workflowMessage import WorkflowMessage
 
 
 @NodeRegistry.Register
@@ -19,6 +20,6 @@ class BeginPlayNode(BaseNode):
         return []
 
     @handler
-    async def Handle(self, message) -> None:
-        """向所有下游节点发送空消息，启动工作流。"""
-        await self.context.SendMessageAsync(None)
+    async def Handle(self, message: WorkflowMessage) -> None:
+        """向所有下游节点广播空消息，启动工作流。"""
+        await self.context.SendMessageAsync(message)

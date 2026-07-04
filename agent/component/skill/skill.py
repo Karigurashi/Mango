@@ -144,8 +144,54 @@ class Skill:
         return f"  - {self.name}: {self.description}"
 
     def GetContent(self) -> str:
-        """Layer 2: 获取完整 Skill 正文，用于 load_skill 工具返回。"""
-        return f"<skill name=\"{self.name}\">\n{self.body}\n</skill>"
+        """Layer 2: 获取完整 Skill 正文，用于 load_skill 工具返回。
+
+        自动将正文中的相对链接解析为绝对路径，确保 LLM 能通过 Read 工具
+        准确定位到引用文件，而非基于 skill 名称猜测路径。
+        """
+        resolvedBody = self._ResolveRelativeLinks(self.body, self.sourcePath)
+        return f"<skill name=\"{self.name}\">\n{resolvedBody}\n</skill>"
+
+    # ---- 路径解析 ----
+
+    @staticmethod
+    def _ResolveRelativeLinks(body: str, sourcePath: str) -> str:
+        """将 Markdown 正文中的相对链接解析为绝对路径。
+
+        基于 sourcePath（SKILL.md 文件路径）的父目录，将所有相对路径的
+        Markdown 链接 ``[text](path)`` 和图片 ``![alt](path)`` 转换为绝对路径，
+        使得 LLM 调用 Read 工具时能正确定位引用文件。
+
+        绝对路径（以 ``/`` 或盘符开头）和外部 URL（``http://`` / ``https://``）
+        不做转换。
+        """
+        import re
+        from pathlib import Path
+
+        if not sourcePath:
+            return body
+
+        baseDir = Path(sourcePath).parent
+
+        def _ResolveMatch(match: re.Match) -> str:
+            prefix = match.group(1)  # '[' 或 '!['
+            text = match.group(2)
+            url = match.group(3)
+
+            # 跳过绝对路径、外部 URL、锚点
+            if url.startswith(("http://", "https://", "/", "#")):
+                return match.group(0)
+            # Windows 盘符绝对路径
+            if len(url) >= 2 and url[1] == ":":
+                return match.group(0)
+
+            resolved = str((baseDir / url).resolve())
+            return f"{prefix}{text}]({resolved})"
+
+        # 匹配 Markdown 链接和图片: [text](url) 和 ![alt](url)
+        # 兼容 URL 中可能包含括号的情况（如 Wikipedia 文章标题含括号）
+        pattern = re.compile(r'(\!?\[)([^\]]*)\]\(([^)]+)\)')
+        return pattern.sub(_ResolveMatch, body)
 
     def IsAutoInvokable(self) -> bool:
         """Agent 是否可以自动调用此 Skill。

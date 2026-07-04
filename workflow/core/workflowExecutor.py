@@ -9,10 +9,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from .eExecutionStatus import EExecutionStatus
-from .workflowContext import WorkflowContext, NodeStreamCallback
+from .workflowContext import WorkflowContext
+from .workflowEventBus import WorkflowEventBus
+from .workflowMessage import WorkflowMessage
+from .workflowStreamEvent import WorkflowStreamEvent, EStreamEventType
 from common.cancellationToken import CancellationToken
 
 if TYPE_CHECKING:
@@ -21,9 +24,6 @@ if TYPE_CHECKING:
     from .workflowGraph import WorkflowGraph
 
 MAX_EXECUTION_DEPTH = 5000
-
-# 执行事件回调签名
-NodeEventCallback = Callable[[int, EExecutionStatus], Awaitable[None]]
 
 
 class WorkflowExecutor:
@@ -41,43 +41,35 @@ class WorkflowExecutor:
     @staticmethod
     async def ExecuteAsync(
         workflow: "Workflow",
-        ctx: WorkflowContext | None = None,
-        onNodeEvent: Optional[NodeEventCallback] = None,
-        onNodeStream: Optional[NodeStreamCallback] = None,
-        cancellationToken: Optional[CancellationToken] = None,
+        ctx: WorkflowContext,
+        eventBus: WorkflowEventBus,
+        cancellationToken: CancellationToken,
     ) -> WorkflowContext:
         """异步执行工作流，从入口节点开始消息驱动遍历。
 
         Args:
             workflow: 工作流定义。
-            ctx: 外部传入的上下文（可选），不传则自动创建。
-            onNodeEvent: 节点执行事件回调 async(nodeId, status)。
-                status 取值: EExecutionStatus 枚举成员。
-            onNodeStream: 节点流式输出回调 async(nodeId, eventType, data)。
-                eventType 取值: EStreamEventType 枚举成员。
-            cancellationToken: 取消令牌（可选），支持协作式取消。
-                未提供时自动创建，asyncio.CancelledError 触发时自动 Cancel。
+            ctx: 共享上下文。
+            eventBus: 工作流事件总线，所有流式事件与节点状态变更均通过此总线 Push。
+            cancellationToken: 取消令牌，支持协作式取消。
+                asyncio.CancelledError 触发时自动 Cancel。
 
         Returns:
             执行后的 WorkflowContext，包含所有中间结果和输出。
         """
-        if ctx is None:
-            ctx = WorkflowContext()
-
-        # 取消令牌：外部传入 > 自动创建
-        if cancellationToken is None:
-            cancellationToken = CancellationToken()
         ctx.SetCancellationToken(cancellationToken)
+        ctx.SetEventBus(eventBus)
+        ctx.SetWorkflowId(workflow.id)
 
-        # 设置流式回调
-        if onNodeStream is not None:
-            ctx.SetNodeStreamCallback(onNodeStream)
-
-        # 注入图引用和事件回调，供复合节点执行子节点时使用
+        # 注入图引用，供复合节点执行子节点时使用
         graph = workflow.graph
         ctx.SetGraph(graph)
-        if onNodeEvent is not None:
-            ctx.SetOnNodeEvent(onNodeEvent)
+
+        # 通知：事件流开始
+        ctx.EventBus.Push(WorkflowStreamEvent(
+            workflowId=workflow.id, nodeId=0, agentId=0,
+            eventType=EStreamEventType.FLOW_START,
+        ))
 
         # 查找入口节点
         entryNodes = graph.GetEntryNodes()
@@ -87,24 +79,37 @@ class WorkflowExecutor:
                 f"Add at least one Action node with no incoming edges."
             )
 
-        # 从每个入口并发开始执行（初始消息为 None）
+        # 从每个入口并发开始执行（初始消息为空 WorkflowMessage）
         tasks = [
-            WorkflowExecutor._ExecuteNodeAsync(
-                entryId, None, graph, ctx, depth=0, onNodeEvent=onNodeEvent
-            )
+            WorkflowExecutor._ExecuteNodeAsync(entryId, WorkflowMessage(nodeId=0, message=""), graph, ctx)
             for entryId in entryNodes
         ]
         try:
             await asyncio.gather(*tasks)
+            return ctx
         except asyncio.CancelledError:
-            # 任务被取消时：Cancel Token → 底层 LLM 连接关闭 → 标记节点 cancelled
+            # 任务被取消时：Cancel Token → 底层 LLM 连接关闭 → 推送节点 cancelled
             cancellationToken.Cancel()
-            if onNodeEvent:
-                for entryId in entryNodes:
-                    await onNodeEvent(entryId, EExecutionStatus.CANCELLED)
+            for entryId in entryNodes:
+                ctx.EventBus.Push(WorkflowStreamEvent(
+                    workflowId=ctx.WorkflowId, nodeId=entryId, agentId=0,
+                    eventType=EStreamEventType.NODE_STATUS,
+                    status=EExecutionStatus.CANCELLED,
+                ))
             raise
-
-        return ctx
+        except Exception:
+            raise
+        finally:
+            # 最终消息：事件流结束，携带最后一个叶子节点的产出
+            finalOutputs = ctx.Outputs
+            text = ""
+            if finalOutputs:
+                text = finalOutputs[-1].message
+            ctx.EventBus.Push(WorkflowStreamEvent(
+                workflowId=ctx.WorkflowId, nodeId=0, agentId=0,
+                eventType=EStreamEventType.FLOW_DONE,
+                message=text,
+            ))
 
     # ---- 内部执行逻辑 ----
 
@@ -115,7 +120,7 @@ class WorkflowExecutor:
         graph: "WorkflowGraph",
         ctx: WorkflowContext,
         depth: int = 0,
-        onNodeEvent: Optional[NodeEventCallback] = None,
+        consumeMessages: bool = True,
     ) -> None:
         """异步执行单个 BaseNode，沿边继续遍历下游。
 
@@ -124,23 +129,21 @@ class WorkflowExecutor:
             message: 上游传入的消息。
             graph: 工作流图结构。
             ctx: 共享上下文。
-            depth: 当前递归深度。
-            onNodeEvent: 节点执行事件回调。
+            depth: 已废弃 —— 深度由 ctx.CurrentDepth 统一跟踪，供复合节点内嵌调用兼容保留。
+            consumeMessages: 是否消费并路由子节点消息。
+                Composite 节点执行子节点时传入 False，自行统一消费聚合。
         """
-        if depth > MAX_EXECUTION_DEPTH:
-            raise RecursionError(
-                f"Workflow execution exceeded max depth {MAX_EXECUTION_DEPTH}. "
-                f"Possible infinite loop at node '{nodeId}'."
-            )
-
         executor = graph.GetNode(nodeId)
         if executor is None:
             raise RuntimeError(f"Node '{nodeId}' not found in graph.")
 
         # 0. 检查取消令牌（节点执行前）
         if ctx.CancellationToken and ctx.CancellationToken.IsCancellationRequested:
-            if onNodeEvent:
-                await onNodeEvent(nodeId, EExecutionStatus.CANCELLED)
+            ctx.EventBus.Push(WorkflowStreamEvent(
+                workflowId=ctx.WorkflowId, nodeId=nodeId, agentId=0,
+                eventType=EStreamEventType.NODE_STATUS,
+                status=EExecutionStatus.CANCELLED,
+            ))
             return
 
         # 1. 查找匹配的 @handler
@@ -148,12 +151,23 @@ class WorkflowExecutor:
         if handlerFn is None:
             return
 
-        # 1.5 进入节点执行：设置 CurrentNodeId，ExecutionRound +1
+        # 1.5 进入节点执行：设置 CurrentNodeId，ExecutionRound +1，Depth +1
         ctx._BeginNodeExecution(nodeId)
 
+        # 1.6 深度保护（_BeginNodeExecution 已将 ctx._currentDepth +1）
+        if ctx.CurrentDepth > MAX_EXECUTION_DEPTH:
+            ctx._EndNodeExecution()
+            raise RecursionError(
+                f"Workflow execution exceeded max depth {MAX_EXECUTION_DEPTH}. "
+                f"Possible infinite loop at node '{nodeId}'."
+            )
+
         # 2. 通知：节点开始执行
-        if onNodeEvent:
-            await onNodeEvent(nodeId, EExecutionStatus.RUNNING)
+        ctx.EventBus.Push(WorkflowStreamEvent(
+            workflowId=ctx.WorkflowId, nodeId=nodeId, agentId=0,
+            eventType=EStreamEventType.NODE_STATUS,
+            status=EExecutionStatus.RUNNING,
+        ))
 
         try:
             # 2.5 注入上下文到节点实例（供 handler 通过 self.context 访问）
@@ -162,36 +176,49 @@ class WorkflowExecutor:
             # 3. 调用 handler
             await handlerFn(executor, message)
             # 通知：节点执行完成
-            if onNodeEvent:
-                await onNodeEvent(nodeId, EExecutionStatus.COMPLETED)
+            ctx.EventBus.Push(WorkflowStreamEvent(
+                workflowId=ctx.WorkflowId, nodeId=nodeId, agentId=0,
+                eventType=EStreamEventType.NODE_STATUS,
+                status=EExecutionStatus.COMPLETED,
+            ))
         except asyncio.CancelledError:
             # 任务被取消：通知取消状态，然后重新抛出让上层处理
-            if onNodeEvent:
-                await onNodeEvent(nodeId, EExecutionStatus.CANCELLED)
+            ctx.EventBus.Push(WorkflowStreamEvent(
+                workflowId=ctx.WorkflowId, nodeId=nodeId, agentId=0,
+                eventType=EStreamEventType.NODE_STATUS,
+                status=EExecutionStatus.CANCELLED,
+            ))
             raise
         except Exception:
             # 通知：节点执行失败
-            if onNodeEvent:
-                await onNodeEvent(nodeId, EExecutionStatus.FAILED)
+            ctx.EventBus.Push(WorkflowStreamEvent(
+                workflowId=ctx.WorkflowId, nodeId=nodeId, agentId=0,
+                eventType=EStreamEventType.NODE_STATUS,
+                status=EExecutionStatus.FAILED,
+            ))
             raise
+        finally:
+            ctx._EndNodeExecution()
 
         # 4. 消费 ctx 中的待发送消息，路由到下游
-        pendingMessages = ctx.ConsumeMessages()
-        for msg, targetIds in pendingMessages:
-            if targetIds:
-                targets = targetIds
-            else:
-                # 默认路由：所有 OUT 类型下游边指向的节点
-                targets = [e.toNodeId for e in graph.GetOutEdgesFrom(nodeId)]
+        if consumeMessages:
+            pendingMessages = ctx.ConsumeMessages()
+            for msg, targetIds in pendingMessages:
+                if targetIds:
+                    targets = targetIds
+                else:
+                    # 默认路由：所有 OUT 类型下游边指向的节点
+                    targets = [e.toNodeId for e in graph.GetOutEdgesFrom(nodeId)]
 
-            if targets:
-                tasks = [
-                    WorkflowExecutor._ExecuteNodeAsync(
-                        tid, msg, graph, ctx, depth + 1, onNodeEvent=onNodeEvent
-                    )
-                    for tid in targets
-                ]
-                await asyncio.gather(*tasks)
+                if targets:
+                    tasks = [
+                        WorkflowExecutor._ExecuteNodeAsync(tid, msg, graph, ctx)
+                        for tid in targets
+                    ]
+                    await asyncio.gather(*tasks)
+                else:
+                    # 叶子节点消息，无下游路由 → 最终产出
+                    ctx._outputs.append(msg)
 
     @staticmethod
     def _ResolveHandler(executor: "BaseNode", message: Any) -> callable | None:

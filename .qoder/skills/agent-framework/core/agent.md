@@ -1,180 +1,172 @@
-# Agent 实现层
+# Agent 执行流
 
-> 源码：[`agent/agent.py`](../../../agent/agent.py)、[`agent/simpleAgent.py`](../../../agent/simpleAgent.py)、[`agent/agentStreamEvent.py`](../../../agent/agentStreamEvent.py)
+Agent 是把 Core 容器、各 Component 与 LLM 协议串成可执行 Agent 的编排器，负责组件挂载、双模调用入口、ReAct 主循环、事件分发、并发与重试兜底。
 
-Agent 实现层是把 Core 容器、各 Component 与 LLM 协议串成一台可执行 Agent 的**编排器**。它本身不封装任何业务规则，只负责：组件挂载、四维调用入口、ReAct 主循环、流事件分发、并发与重试兜底。
-
-## 1 类清单
+## Agent 构造流程
 
 ```
-agent/
-├── agent.py             # Agent —— 完整 ReAct 编排器（591 行）
-├── simpleAgent.py       # SimpleAgent —— 纯对话精简版（无 ReAct，65 行）
-└── agentStreamEvent.py  # AgentStreamEvent / EAgentStreamEventType
+Agent(llm, config?)
+├─ AddComponent(DataComponent)          # 仅构造，预注入 llm + config
+├─ GetComponent(EventBusComponent)      # 惰性触发 OnInitialize
+├─ GetComponent(LLMComponent)           # 注入 Data.llm + EventBus
+├─ GetComponent(SessionComponent)       # 创建默认 Session
+├─ GetComponent(ContextComponent)       # 注入 Session/LLM/Data/EventBus
+├─ GetComponent(RuleComponent)
+├─ GetComponent(SkillComponent)
+├─ GetComponent(McpComponent)
+├─ GetComponent(ToolComponent)
+└─ GetComponent(HarnessComponent)       # 缓存全部依赖，_built=False
 ```
 
-## 2 Agent 构造与组件挂载（agent.py）
+LOD0 装填延迟到首次 RunStreamAsync/RunAsync 时由 HarnessComponent.BuildAsync() 完成。
 
-`Agent.__init__(config: AgentConfig)` 严格按依赖顺序挂载所有 Component。**顺序不可调换**，否则后挂载的组件 `OnInitialize` 会拿不到兄弟。
+## 双模调用入口
 
-```text
-Agent(config)
-  └─ 顺序挂载（编号即 OnInitialize 顺序）：
-       1  DataComponent      —— 配置/状态/LLM 对象的唯一持有者
-       2  LLMComponent       —— 从 1 拉 llm，绑定 requestParams
-       3  SessionComponent   —— 持有消息账本，OnInitialize 注入 Memory
-       4  ContextComponent   —— 从 1/2/3 拉 config/llm/session，初始化 LOD/Lock
-       5  RuleComponent      —— 加载 .rule.md
-       6  SkillComponent     —— 加载 SKILL.md
-       7  McpComponent       —— 注册 Server，但延迟到 Harness 才连接
-       8  ToolComponent      —— 实例级 _tools；@Register 仅注册到类级 _toolClasses
-       9  HarnessComponent   —— 装载工具/扩展、注入 LOD0
-      10  LoggingComponent   —— 启动后台刷盘 Task
-       └─ self.InitAllComponents()    # Core 层统一触发 OnInitialize
-       └─ self._runLock = asyncio.Lock()  # 并发互斥
+RunStreamAsync 与 RunAsync 共享 `_RunGuardedAsync` 统一入口，区别仅在于 LLM 调用方式（StreamAsync vs InvokeAsync）。
+
+**`_RunGuardedAsync` 流程**：
+
+```
+_RunGuardedAsync(userMessage, cancellationToken, stream)
+├─ _runLock 惰性创建（asyncio.Lock）
+├─ 若 _runLock.locked() → 推送 ErrorEvent + return
+├─ async with _runLock:
+│   ├─ _RunReActCoreAsync(userMessage, ct, stream)
+│   └─ finally:
+│         ctxComp.AfterTurnAsync()           # LOD3清理 + SaveToMemory
+│         若异常退出 → state=ERROR + EmitDone
 ```
 
-## 3 四维调用入口
+## ReAct 核心循环
 
-LLM 调用有 **同步/异步 × 单次/流式** 两组维度，Agent 把这四种形态全部暴露成对偶 API，业务方根据调用栈环境（FastAPI / Jupyter / 测试 / CLI）自由选择。
+```
+准备阶段：
+  harnessComp.BuildAsync()                    # LOD0装填 + 工具绑定
+  ctxComp.AutoColdOffloadIfNeeded()           # 宽限期冷卸载检查
+  ctxComp.Ingest(USER, userMessage)
 
-| 维度 | 异步 | 同步桥接 |
-|------|------|----------|
-| 单次（返回最终文本） | `RunInvokeAsync(query) -> str` | `RunInvoke(query) -> str` |
-| 流式（逐 token 增量） | `RunAsync(query) -> AsyncIterator[Event]` | `RunStream(query) -> Iterator[Event]` |
+for turn in range(maxTurns):
+  ┌─ THINK ──────────────────────────────┐
+  │ EmitEvent(TurnStart)                   │
+  │ chatMessages = ctxComp.AssembleAsync() │
+  │   → 增量估算 + 超预算自动压缩          │
+  │   → FixOrphanedToolCalls              │
+  │   → _ApplyCacheControl                │
+  │ llmComp.StreamAsync / InvokeAsync     │
+  │   → 内部推送 ThinkingDelta/TextDelta   │
+  └───────────────────────────────────────┘
+         │
+         ├─ 无 toolCalls → 纯文本响应 → break
+         │
+  ┌─ ACT ────────────────────────────────┐
+  │ EmitStateChange(ACTING)               │
+  │ for tc: EmitEvent(ToolStart)          │
+  │ results = toolComp.DispatchBatchAsync()│
+  │ for tc, result: EmitEvent(ToolResult) │
+  │ ctxComp.Ingest(ASSISTANT, toolCalls)  │
+  │ for result:                           │
+  │   ingestContent = PersistToolResult() │
+  │   ctxComp.Ingest(TOOL, ingestContent) │
+  │ ctxComp.AdvanceTurn()                 │
+  └───────────────────────────────────────┘
+         │
+         └─ continue
 
-### 3.1 同步桥接策略
-
-```text
-RunInvoke / RunStream
-  ├─ 检测当前线程是否已存在 running event loop
-  │     ├─ 无 ──► asyncio.run(coro)   # 简单场景
-  │     └─ 有 ──► 抛 RuntimeError，提示用户改用 *Async 版本（避免嵌套 loop 死锁）
+maxTurns耗尽 → ErrorEvent + ERROR + Done
+正常结束 → autoCompact触发 → FINISHED + Done
 ```
 
-### 3.2 异步入口流程
+### Ingest 顺序约束
 
-```text
-RunInvokeAsync / RunAsync(query)
-  ├─ _TryAcquireRunLock          —— 单实例并发互斥（见 §5）
-  ├─ RunWithLifecycleAsync
-  │     ├─ LoggingComponent.LogRunStart
-  │     ├─ Session.Append(USER query)        —— ContextComponent.Ingest
-  │     ├─ _RunReActCoreAsync 主循环（见 §4）
-  │     ├─ Context.AfterTurnAsync           —— Cleanup / PurgeCompacted / SaveToMemory
-  │     └─ LoggingComponent.LogRunEnd
-  └─ finally: 释放 _runLock
-```
+ASSISTANT(带 tool_calls) 必须在 TOOL 消息之前 Ingest。OpenAI 校验 tool_calls 在 TOOL 消息之前，缺失则 400 拒绝。
 
-`RunAsync` 与 `RunInvokeAsync` 共享同一主循环，区别仅在于：
+### 异常处理
 
-* `RunAsync` 在循环内 **逐 chunk yield** `AgentStreamEvent`；
-* `RunInvokeAsync` 不暴露事件，最终 return 拼接的最终文本。
-
-## 4 ReAct 核心循环 `_RunReActCoreAsync`
-
-```text
-While turn < maxIterations:
-    ┌─ THINK ──────────────────────────────────────────────┐
-    │  Context.AssembleAsync ──► messages（含工具结果）       │
-    │  LLM.StreamAsync(messages) → token deltas / tool_call  │
-    │  EAgentState = THINKING                               │
-    └───────────────────────────────────────────────────────┘
-            │
-            ├─ 模型仅返回文本 ──► EAgentState = FINISHED ──► break
-            │
-    ┌─ ACT ────────────────────────────────────────────────┐
-    │  EAgentState = ACTING                                │
-    │  for each tool_call:                                  │
-    │      ToolComponent.DispatchAsync(name, args)          │
-    │      Session.Append(TOOL result)                      │
-    │      Context.PersistToolResult(if oversize)           │
-    └───────────────────────────────────────────────────────┘
-            │
-    ┌─ OBSERVE ────────────────────────────────────────────┐
-    │  Context.AfterTurnAsync(perTurn cleanup)              │
-    │  Logging.LogToolExecution / LogStateChange            │
-    └───────────────────────────────────────────────────────┘
-turn += 1
-```
-
-> 详细时序见 [flows.md](flows.md)；本文档只列控制流框架。
-
-### 4.1 重试与降级
-
-| 机制 | 触发条件 | 行为 |
-|------|---------|------|
-| `_CallWithRetryAsync` | LLM 调用抛 `_IsRetryable` 类异常 | 指数退避重试 `maxRetries` 次（默认 3）|
-| `_SanitizeToolMessages` | 重试前 | 剥离不完整的 tool_call / tool_result，保证消息序列对偶 |
-| `_IsRetryable(exc)` | 判别 | 网络/超时/5xx → True；4xx/Schema 错误 → False |
-| Iter 上限保护 | `turn >= maxIterations` | 强制结束，state = FINISHED，记录 warning |
-
-## 5 并发安全 `_runLock`
-
-```text
-self._runLock: asyncio.Lock = asyncio.Lock()
-
-_TryAcquireRunLock():
-    if self._runLock.locked():
-        raise RuntimeError("Agent is already running, refuse re-entrant call")
-    return await self._runLock.acquire()
-```
-
-* **单 Agent 实例同时只能跑一个 Run**：避免 SessionComponent 的 messages、ContextComponent 的 turnIndex 被并发踩踏。
-* 想要并发？请创建多个 Agent 实例，各自持有独立的 Session / Context。
-
-## 6 AgentStreamEvent（agentStreamEvent.py）
-
-```python
-class EAgentStreamEventType(Enum):
-    TURN_START    # 新一轮 ReAct 开始
-    TEXT_DELTA    # LLM token 增量
-    TOOL_START    # 工具开始执行（含 name + args）
-    TOOL_RESULT   # 工具执行完成（成功 or 失败）
-    STATE_CHANGE  # EAgentState 迁移
-    ERROR         # 致命错误（含 exc_info）
-    DONE          # 整个 Run 终止
-
-class AgentStreamEvent(NamedTuple):
-    type: EAgentStreamEventType
-    data: dict[str, Any]
-    timestamp: float
-```
-
-工厂方法（按事件类型封装构造）：
-
-| 工厂 | 作用 |
+| 机制 | 行为 |
 |------|------|
-| `AgentStreamEvent.TextDelta(text)` | 包装 token 增量 |
-| `AgentStreamEvent.ToolStart(name, args)` | 包装工具调用前事件 |
-| `AgentStreamEvent.ToolResult(name, result, success)` | 工具完成 |
-| `AgentStreamEvent.StateChange(old, new)` | EAgentState 迁移 |
-| `AgentStreamEvent.Error(exc)` | 错误事件，附 traceback |
-| `AgentStreamEvent.Done(reason)` | 终止 |
+| LLM 异常 | ErrorEvent + STATE_CHANGE(ERROR) |
+| CancellationToken 取消 | ErrorEvent + STATE_CHANGE(ERROR) |
+| maxTurns 耗尽 | ErrorEvent + STATE_CHANGE(ERROR) + Done |
+| finally | ctxComp.AfterTurnAsync() 必然执行 |
 
-> **不可变性**：`AgentStreamEvent` 用 NamedTuple 实现，UI/前端可放心缓存而无需 deep copy。
+## 并发安全
 
-## 7 SimpleAgent（simpleAgent.py）
+`_runLock`（asyncio.Lock）保证单 Agent 实例同时只能跑一个 Run，避免 Session 的 messages、Context 的 turnIndex 被并发踩踏。想并发需创建多个 Agent 实例。
 
-精简版 Agent，**只挂载 DataComponent + LLMComponent**，跳过工具系统与 ReAct 主循环，适合：
+## 事件系统
 
-* 无需工具、纯 chat 的轻量场景；
-* 单元测试用作 baseline；
-* 嵌入到更大编排器中作为子模块。
+事件通过 EventBusComponent 推送，替代旧版 yield 模式：
 
-```text
-SimpleAgent(config)
-  ├─ AddComponent(DataComponent)
-  ├─ AddComponent(LLMComponent)
-  └─ InitAllComponents()
+- **Subscribe(callback)**：注册同步回调
+- **Push(event)**：广播所有监听器 → 自动归还对象池
+- **监听器异常隔离**：不中断 Agent 主循环
 
-SimpleAgent.StreamAsync(query) ──► LLMComponent.StreamAsync(messages=[query])
-                                     单轮、无重试、无 ReAct、无 ToolCall
+### AgentStreamEvent 事件类型
+
+| 事件 | 触发时机 |
+|------|---------|
+| TURN_START | 每轮 ReAct 开始 |
+| THINKING_DELTA | 流式思考增量 |
+| THINKING_COMPLETE | 思考完成 |
+| TEXT_DELTA | 流式文本增量 |
+| TEXT_COMPLETE | 文本完成 |
+| TOOL_START | 工具调用开始 |
+| TOOL_RESULT | 工具执行结果 |
+| STATE_CHANGE | EAgentState 迁移 |
+| COMPACTION | 上下文压缩 |
+| ERROR | 错误事件 |
+| DONE | 本轮结束 |
+
+### 对象池
+
+事件从对象池获取（最大 64 个），Push 后自动 Release 归还。调用方 MUST NOT 在回调返回后继续持有 event 引用。
+
+### 事件推送内聚
+
+LLMComponent.StreamAsync 内部直接推送 ThinkingDelta / TextDelta / ThinkingComplete / TextComplete，Agent 主循环无需自行管理缓冲区。
+
+## 生命周期保证
+
+`_RunGuardedAsync` 的 try/finally 覆盖所有终止路径：
+
+| 路径 | finally 行为 |
+|------|-------------|
+| 正常完成 | AfterTurnAsync 照常清理 |
+| LLM 异常 | state=ERROR + EmitDone |
+| maxTurns 耗尽 | state=ERROR + EmitDone |
+| CancellationToken 取消 | state=ERROR + EmitDone |
+
+任意一次 Run 结束后 EAgentState 一定回到终态 FINISHED 或 ERROR。消息压缩状态、外存文件、Session 摘要不因异常泄漏。
+
+## 工具执行流程
+
+```
+DispatchBatchAsync(toolCalls)
+├─ asyncio.gather 并发调度
+├─ 单工具流程：
+│   tool = Get(toolCall.name)
+│   tool._agent = self._agent              # 注入 Agent 引用
+│   timeout 三级优先：实例 > 类 > default(300s)
+│   await asyncio.wait_for(tool.ExecuteAsync(**args), timeout)
+│   异常包装为 ToolResult.Fail
+├─ 单工具失败不取消其余任务
+└─ 返回与输入顺序对应的 ToolResult 列表
 ```
 
-## 8 关键不变式
+## 上下文压缩流程
 
-1. `_runLock` 持有期间，Session / Context / EAgentState 的写入都来自当前 Run，不会有并发污染。
-2. `RunWithLifecycleAsync` 的 `try/finally` 确保 `Context.AfterTurnAsync` 与 `Logging.LogRunEnd` **必然执行**，即使主循环抛异常。
-3. 任意一次 Run 结束后，`EAgentState` 一定回到终态 `FINISHED` 或 `ERROR`，不会停留在 `THINKING/ACTING`。
-4. `RunInvoke / RunStream` 仅在**无运行 loop**的线程下使用，否则必须显式调用 `RunInvokeAsync / RunAsync`。
+触发点：AssembleAsync 增量估算超预算自动 CompactAsync(force=True)；主循环正常结束 autoCompact 触发；每轮对话前 AutoColdOffloadIfNeeded。
+
+```
+CompactAsync(force=False)
+├─ asyncio.Lock 串行化
+├─ 优先级1: 冷 LOD2 落盘为路径引用（零LLM成本）
+├─ 优先级2: LOD1 → LLM 批量摘要 → SYSTEM 摘要消息
+└─ session.ApplyCompactionResult（保留LOD0）
+```
+
+压缩后 FixOrphanedToolCalls 净化孤儿工具消息。
+
+## SimpleAgent
+
+仅挂载 DataComponent + LLMComponent + EventBusComponent。RunStreamAsync 单轮调 LLMComponent.StreamAsync，事件经 EventBusComponent 推送。无 ReAct、无工具、无 Context、无 Harness。

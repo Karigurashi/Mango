@@ -1,253 +1,399 @@
-"""SessionComponent —— 消息的唯一归属地，可挂载到 BaseAgent 的消息存储器。
+"""SessionComponent —— Session 管理器，可挂载到 BaseAgent。
 
-SessionComponent 存储本次会话的全部 ContextMessage，包含原始消息和压缩摘要。
+SessionComponent 管理多个 Session 实例，维护一个活跃 Session 引用。
+对外暴露与旧版兼容的消息管理接口，全部代理到活跃 Session。
+
 作为 IComponent 可挂载到 BaseAgent，通过 OnInitialize/OnDestroy 感知生命周期。
 其他 Component（如 ContextComponent）通过依赖注入持有 SessionComponent 引用。
 """
 
 from __future__ import annotations
 
+import json
 import time
-import uuid
-
 from typing import TYPE_CHECKING
 
 from agent.component.contex.contextMessage import ContextMessage
+from agent.component.contex.eContextLodLevel import EContextLodLevel
 from agent.core.baseComponent import IComponent
-from agent.component.memory import MemoryComponent
+from agent.component.session.session import Session
 from common.const import ERole
-from llm.tokenEstimator import TokenEstimator
+from common.logger import Logger
 
 if TYPE_CHECKING:
     from agent.core.baseAgent import BaseAgent
+    from agent.component.memory import MemoryComponent
 
 
 class SessionComponent(IComponent):
-    """Agent 运行时的消息存储器，可挂载为 Component。
+    """Agent 运行时的 Session 管理器，可挂载为 Component。
 
-    SessionComponent 是"账本"——完整记录所有消息（含压缩摘要），每条有唯一 messageId。
-    ContextComponent 是"调度器"——从 SessionComponent 读取，决定发给 LLM 什么，压缩后回写 SessionComponent。
+    SessionComponent 是"账本管理员"——持有多个 Session，每个 Session
+    完整记录所有消息（含压缩摘要）。ContextComponent 是"调度器"——
+    从活跃 Session 读取，决定发给 LLM 什么，压缩后回写。
 
     Attributes:
-        sessionId: 会话唯一标识（UUID）。
-        messages: ContextMessage 列表。
         memory: 关联的持久化 Memory 实例（可选）。
-        createdAt: 创建时间戳。
-        updatedAt: 最后更新时间戳。
+        ActiveSessionId: 当前活跃会话的 ID。
+        SessionCount: 已创建的会话总数。
     """
 
     def __init__(self) -> None:
-        self.sessionId = str(uuid.uuid4())
-        self.messages: list[ContextMessage] = []
-        self._messageIndex: dict[str, ContextMessage] = {}  # messageId → msg，O(1) 查找
-        self.createdAt = time.time()
-        self.updatedAt = self.createdAt
-        self._compressedSummary: ContextMessage | None = None
-        self._compressedUpToTurnIndex: int = -1
-        self._forkBaselineCount: int = 0
         self.memory: MemoryComponent | None = None
-        self._compressedMessageIds: set[str] = set()
-        self._tokenEstimator: TokenEstimator = TokenEstimator()
-        self._summaryTokenBudget: int = 500
+        self._sessions: dict[str, Session] = {}
+        self._activeSession: Session | None = None
 
     # ---- IComponent 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
-        """挂载后初始化，自动注入 MemoryComponent。"""
+        """挂载后初始化，自动注入 MemoryComponent 和 LLMComponent 并创建默认 Session。"""
+        from agent.component.memory import MemoryComponent
+
         self.memory = agent.GetComponent(MemoryComponent)
+        self._activeSession = Session()
+        self._sessions[self._activeSession.sessionId] = self._activeSession
 
     def OnDestroy(self) -> None:
-        """从 BaseAgent 卸载时回调，清空消息和压缩状态。"""
-        self.Clear()
+        """从 BaseAgent 卸载时回调，清空所有 Session。"""
+        self.ClearAllSessions()
 
-    # ---- Memory 读写 ----
+    # ---- Session 管理（新增） ----
 
-    def SaveToMemory(self) -> None:
-        """将本次会话摘要持久化到 Memory，含完整压缩元数据。"""
-        if self.memory is None:
-            return
+    @property
+    def ActiveSession(self) -> Session | None:
+        """当前活跃的 Session 实例。"""
+        return self._activeSession
 
-        summary = self._ExtractSessionSummary()
-        if summary:
-            compactedCount = sum(1 for m in self.messages if m.isCompacted)
-            self.memory.SaveSessionSummary(
-                self.sessionId,
-                summary,
-                messageCount=len(self.messages),
-                compactedCount=compactedCount,
-                compressedUpToTurnIndex=self._compressedUpToTurnIndex,
-            )
+    @property
+    def ActiveSessionId(self) -> int:
+        """当前活跃 Session 的 ID。"""
+        return self._activeSession.sessionId if self._activeSession else 0
 
-    def _ExtractSessionSummary(self) -> str:
-        """提取可用于跨会话恢复的会话摘要。"""
-        if self._compressedSummary is not None:
-            return self._TruncateToTokens(
-                self._compressedSummary.content, self._summaryTokenBudget
-            )
+    @property
+    def SessionCount(self) -> int:
+        """已创建的会话总数。"""
+        return len(self._sessions)
 
-        for msg in reversed(self.messages):
-            if msg.role == ERole.ASSISTANT and msg.content.strip():
-                return self._TruncateToTokens(msg.content, self._summaryTokenBudget)
-        return ""
+    def NewSession(self) -> int:
+        """创建新会话并设为活跃。
 
-    def _TruncateToTokens(self, text: str, budget: int) -> str:
-        """使用 TokenEstimator 判断并按 token 预算截断文本。
-
-        精确编码不可用时退化为每 4 个字符 1 token 的近似。
-        """
-        if not text or budget <= 0:
-            return ""
-        if self._tokenEstimator.Estimate(text) <= budget:
-            return text
-
-        targetChars = max(1, int(budget * 4))
-        if len(text) <= targetChars:
-            return text
-        return text[:targetChars] + "…"
-
-    # ---- 消息管理 ----
-
-    def Append(self, msg: ContextMessage) -> None:
-        """追加一条 ContextMessage。
-
-        Args:
-            msg: ContextMessage 实例（messageId 为空时自动生成）。
-        """
-        if not msg.messageId:
-            msg.messageId = str(uuid.uuid4())
-        self.messages.append(msg)
-        self._messageIndex[msg.messageId] = msg
-        self.updatedAt = time.time()
-
-    def AppendBatch(self, msgs: list[ContextMessage]) -> None:
-        """批量追加消息。"""
-        for msg in msgs:
-            if not msg.messageId:
-                msg.messageId = str(uuid.uuid4())
-            self._messageIndex[msg.messageId] = msg
-        self.messages.extend(msgs)
-        self.updatedAt = time.time()
-
-    def GetAll(self) -> list[ContextMessage]:
-        """返回所有消息的浅拷贝。"""
-        return list(self.messages)
-
-    def GetLastN(self, n: int) -> list[ContextMessage]:
-        """返回最后 N 条消息。"""
-        return self.messages[-n:] if n < len(self.messages) else list(self.messages)
-
-    def GetMessageCount(self) -> int:
-        """返回消息总数。"""
-        return len(self.messages)
-
-    def FindById(self, messageId: str) -> ContextMessage | None:
-        """按 messageId 查找消息（O(1) 索引查找）。
-
-        Args:
-            messageId: 消息唯一标识。
+        当前活跃会话（如有）会被归档（持久化摘要到 Memory），
+        然后创建全新 Session 实例。旧 Session 中的 RESIDENT
+        内容会拷贝到新 Session，保证 harness 初始填充的规则、
+        技能前缀等常驻内容跨会话复用，无需反复重建。
 
         Returns:
-            找到的 ContextMessage，不存在时返回 None。
+            新创建的 sessionId。
         """
-        return self._messageIndex.get(messageId)
+        if self._activeSession is not None:
+            self.SaveToMemory()
 
-    def MarkCompacted(self, messageId: str) -> bool:
-        """将指定消息标记为已压缩（后续组装时跳过）。
+        session = Session()
+        # 从旧 Session 拷贝 RESIDENT 内容到新 Session
+        if self._activeSession is not None:
+            session.ReplaceResidents(list(self._activeSession.residentMessages))
+
+        self._sessions[session.sessionId] = session
+        self._activeSession = session
+        return session.sessionId
+
+    def SwitchSession(self, sessionId: int) -> bool:
+        """切换到指定会话。
+
+        切换前自动归档当前活跃会话。若目标 sessionId 不存在则返回 False。
 
         Args:
-            messageId: 消息唯一标识。
+            sessionId: 目标会话 ID。
 
         Returns:
-            是否成功标记。
+            是否切换成功。
         """
-        msg = self.FindById(messageId)
-        if msg is None:
+        target = self._sessions.get(sessionId)
+        if target is None:
             return False
-        msg.isCompacted = True
-        self._compressedMessageIds.add(messageId)
-        self.updatedAt = time.time()
+
+        if self._activeSession is not None and self._activeSession is not target:
+            self.SaveToMemory()
+
+        self._activeSession = target
         return True
 
-    def Clear(self) -> None:
-        """清空所有消息（慎用）。"""
-        self.messages.clear()
-        self._messageIndex.clear()
-        self._compressedMessageIds.clear()
-        self.ClearCompressedSummary()
-        self.updatedAt = time.time()
+    def GetSession(self, sessionId: int) -> Session | None:
+        """按 ID 获取 Session 实例。
 
-    def PurgeCompacted(self) -> int:
-        """移除所有已标记为压缩的消息，释放内存。
+        Args:
+            sessionId: 会话唯一标识。
+
+        Returns:
+            找到的 Session，不存在时返回 None。
+        """
+        return self._sessions.get(sessionId)
+
+    def GetSessionIds(self) -> list[int]:
+        """返回所有已创建会话的 ID 列表。"""
+        return list(self._sessions.keys())
+
+    def RemoveSession(self, sessionId: int) -> bool:
+        """移除指定会话。
+
+        若移除的是活跃会话，则自动将活跃会话置为 None，
+        调用方应在移除后通过 NewSession 或 SwitchSession 设置新活跃会话。
+
+        Args:
+            sessionId: 待移除的会话 ID。
+
+        Returns:
+            是否成功移除。
+        """
+        session = self._sessions.pop(sessionId, None)
+        if session is None:
+            return False
+        if session is self._activeSession:
+            self._activeSession = None
+        return True
+
+    def ClearAllSessions(self) -> None:
+        """清空所有 Session。"""
+        self._sessions.clear()
+        self._activeSession = None
+
+    # ---- 会话持久化 ----
+
+    def SaveToMemory(self) -> int:
+        """将活跃会话全量序列化为 JSON 持久化到 memory/sessions/YYYY-MM-DD/{sessionId}.md。
+
+        核心保证：Session 全量可存储、可从文件加载组装回来。
+
+        Returns:
+            实际写入的消息数量，失败时返回 0。
+        """
+        session = self._activeSession
+        if session is None:
+            return 0
+
+        messages = session.residentMessages + session.conversationMessages
+        if not messages:
+            return 0
+
+        if self.memory is None:
+            return 0
+
+        body = json.dumps(session.ToJsonDict(), ensure_ascii=False, indent=2)
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+        toolNames: set[str] = set()
+        for msg in messages:
+            tcs = msg.chatMessage.toolCalls
+            if tcs:
+                for tc in tcs:
+                    toolNames.add(tc.name)
+
+        ok = self.memory.SaveToMemory(
+            sessionId=session.sessionId,
+            body=body,
+            messageCount=len(messages),
+            toolsUsed=sorted(toolNames) if toolNames else None,
+            created=now,
+        )
+        return len(messages) if ok else 0
+
+    def SaveToMarkdown(self) -> int:
+        """将活跃会话全量序列化为人类可读的 Markdown 格式，持久化到 memory/sessions/YYYY-MM-DD/{sessionId}.md。
+
+        与 SaveToMemory（纯 JSON 序列化）不同，本方法生成结构化 Markdown 正文：
+          - 每条消息按 role 分区，标注 LOD 等级与是否为摘要
+          - 工具调用以 ```json 代码块展示参数
+          - TOOL 消息关联回其工具名
+
+        Returns:
+            实际写入的消息数量，失败时返回 0。
+        """
+        session = self._activeSession
+        if session is None:
+            return 0
+
+        if self.memory is None:
+            return 0
+
+        allMsgs = session.residentMessages + session.conversationMessages
+        if not allMsgs:
+            return 0
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        rCount = len(session.residentMessages)
+        cCount = len(session.conversationMessages)
+
+        # 预计算 tool_call_id → tool_name 映射，供 TOOL 消息回链
+        toolNameMap: dict[str, str] = {}
+        for msg in allMsgs:
+            tcs = msg.chatMessage.toolCalls
+            if tcs:
+                for tc in tcs:
+                    toolNameMap[tc.id] = tc.name
+
+        lines: list[str] = []
+
+        # ---- Header ----
+        lines.append(f"# Session {session.sessionId}")
+        lines.append("")
+        lines.append(f"- **Created:** {now}")
+        lines.append(f"- **Messages:** {len(allMsgs)} total ({rCount} RESIDENT, {cCount} conversation)")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # ---- Messages ----
+        for msg in allMsgs:
+            role = msg.role.value.capitalize()
+            headerParts = [f"## [{role.upper()}]"]
+
+            # LOD 标记
+            lodTag = msg.lodLevel.name
+            if msg.lodLevel == EContextLodLevel.RESIDENT:
+                headerParts.append(f"`{lodTag}`")
+
+            # 摘要标记
+            if msg.isSummary:
+                headerParts.append("*(summary)*")
+
+            tcs = msg.chatMessage.toolCalls
+
+            # ASSISTANT 带 tool_calls
+            if tcs:
+                headerParts.append("→ tool_calls")
+
+            # TOOL 消息回链工具名
+            if msg.role == ERole.TOOL and msg.chatMessage.toolCallId:
+                toolName = toolNameMap.get(msg.chatMessage.toolCallId, "?")
+                headerParts.append(f"← `{toolName}`")
+
+            lines.append(" ".join(headerParts))
+            lines.append("")
+
+            # 工具调用详情
+            if tcs:
+                for tc in tcs:
+                    argsStr = json.dumps(tc.arguments, ensure_ascii=False)
+                    lines.append(f"- `{tc.name}` (id: `{tc.id}`)")
+                    lines.append("  ```json")
+                    lines.append(f"  {argsStr}")
+                    lines.append("  ```")
+                if msg.content.strip():
+                    lines.append("")
+                    lines.append(msg.content.strip())
+
+            # 普通文本内容
+            elif msg.content.strip():
+                lines.append(msg.content.strip())
+
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        # ---- 工具统计 ----
+        toolNames: set[str] = set()
+        for msg in allMsgs:
+            tcs = msg.chatMessage.toolCalls
+            if tcs:
+                for tc in tcs:
+                    toolNames.add(tc.name)
+
+        ok = self.memory.SaveToMemory(
+            sessionId=session.sessionId,
+            body="\n".join(lines),
+            messageCount=len(allMsgs),
+            toolsUsed=sorted(toolNames) if toolNames else None,
+            created=now,
+        )
+        return len(allMsgs) if ok else 0
+
+    def ReadFromMemory(self, sessionId: int) -> Session | None:
+        """从 memory/sessions/*/{sessionId}.md 读取并还原完整 Session。
+
+        从 JSON 反序列化，重建消息列表、residentMessages 及 lod3Count。
+
+        Args:
+            sessionId: 目标会话 ID。
+
+        Returns:
+            还原的 Session 实例，不存在或解析失败时返回 None。
+        """
+        if self.memory is None:
+            return None
+
+        body = self.memory.ReadSession(sessionId)
+        if body is None:
+            return None
+
+        try:
+            data = json.loads(body)
+            return Session.FromJsonDict(data)
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            Logger.Error(f"SessionComponent.ReadFromMemory failed: sessionId={sessionId}, {e}")
+            return None
+
+    # ---- 属性代理（向后兼容） ----
+
+    @property
+    def sessionId(self) -> str:
+        """活跃会话的 ID（向后兼容）。"""
+        return self._activeSession.sessionId
+
+    @property
+    def residentMessages(self) -> list[ContextMessage]:
+        """活跃会话的 RESIDENT 常驻消息列表（只读）。"""
+        return self._activeSession.residentMessages
+
+    @property
+    def conversationMessages(self) -> list[ContextMessage]:
+        """活跃会话的非 RESIDENT 对话消息列表（只读）。"""
+        return self._activeSession.conversationMessages
+
+    # ---- 消息管理（代理到活跃 Session，向后兼容） ----
+
+    def Append(self, msg: ContextMessage) -> None:
+        """追加一条 ContextMessage 到活跃会话。"""
+        self._activeSession.Append(msg)
+
+    def AppendBatch(self, msgs: list[ContextMessage]) -> None:
+        """批量追加消息到活跃会话。"""
+        self._activeSession.AppendBatch(msgs)
+
+    def GetMessageCount(self) -> int:
+        """返回活跃会话消息总数。"""
+        return self._activeSession.GetMessageCount()
+
+    def ClearLod3(self) -> int:
+        """清除活跃会话中所有 LOD3 消息。"""
+        return self._activeSession.ClearLod3()
+
+    def ApplyCompactionResult(self, compactedMessages: list[ContextMessage]) -> None:
+        """使用压缩产物替换活跃会话的消息列表，保留 RESIDENT。"""
+        self._activeSession.ApplyCompactionResult(compactedMessages)
+
+    def FixOrphanedToolCalls(self) -> int:
+        """修复活跃 Session 中孤立的 tool_call 链。
 
         Returns:
             被移除的消息数量。
         """
-        compactedIds = [
-            msg.messageId for msg in self.messages if msg.isCompacted
-        ]
-        if not compactedIds:
-            return 0
-
-        self.messages = [m for m in self.messages if not m.isCompacted]
-        for mid in compactedIds:
-            self._messageIndex.pop(mid, None)
-        self.updatedAt = time.time()
-        return len(compactedIds)
-
-    # ---- 压缩摘要（独立存储，不在 messages 队列中） ----
-
-    @property
-    def CompressedSummary(self) -> ContextMessage | None:
-        """唯一的压缩摘要，None 表示尚无压缩。"""
-        return self._compressedSummary
-
-    @property
-    def CompressedUpToTurnIndex(self) -> int:
-        """压缩覆盖到的最大 turnIndex，-1 表示无压缩。"""
-        return self._compressedUpToTurnIndex
-
-    def SetCompressedSummary(self, summary: ContextMessage, upToTurnIndex: int) -> None:
-        """设置唯一的压缩摘要及其覆盖范围。
-
-        Args:
-            summary: 压缩生成的摘要消息。
-            upToTurnIndex: 本次压缩覆盖到哪个 turnIndex。
-        """
-        self._compressedSummary = summary
-        self._compressedUpToTurnIndex = upToTurnIndex
-        self.updatedAt = time.time()
-
-    def ClearCompressedSummary(self) -> None:
-        """清除压缩摘要。"""
-        self._compressedSummary = None
-        self._compressedUpToTurnIndex = -1
-        self.updatedAt = time.time()
-
-    # ---- 统计 ----
+        return self._activeSession.FixOrphanedToolCalls()
 
     def GetStats(self) -> dict:
-        """返回会话统计信息。
-
-        Returns:
-            包含 ``messageCount``、``compactedCount``、``totalBytes`` 的字典。
-        """
-        return {
-            "messageCount": len(self.messages),
-            "compactedCount": len(self._compressedMessageIds),
-            "totalBytes": sum(
-                len(m.content.encode("utf-8")) for m in self.messages if m.content
-            ),
-        }
+        """返回活跃会话的统计信息。"""
+        return self._activeSession.GetStats()
 
     # ---- 魔法方法 ----
 
     def __repr__(self) -> str:
-        compressed = f", compressedUpToTurn={self._compressedUpToTurnIndex}" if self._compressedSummary else ""
+        if self._activeSession is None:
+            return "SessionComponent(active=None, sessions=0)"
         return (
-            f"SessionComponent(id={self.sessionId[:8]}..., "
-            f"messages={len(self.messages)}, "
-            f"hasMemory={self.memory is not None}{compressed})"
+            f"SessionComponent(active={self._activeSession.sessionId}, "
+            f"messages={len(self._activeSession)}, "
+            f"sessions={len(self._sessions)}, "
+            f"hasMemory=True)"
         )
 
     def __len__(self) -> int:
-        return len(self.messages)
+        return len(self._activeSession) if self._activeSession else 0

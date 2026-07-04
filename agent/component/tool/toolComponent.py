@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from typing import Any, TYPE_CHECKING
 
 from agent.core.baseComponent import IComponent
-from common.logger import Logger
 from llm.provider.chatMessage import ToolSpec, ToolCall
 
 from .eToolCategory import EToolCategory
@@ -39,7 +39,6 @@ class ToolComponent(IComponent):
 
         toolComp = ToolComponent()
         agent.AddComponent(toolComp)
-        toolComp.LoadBuiltins()
 
         # 方式一：装饰器注册（推荐）
         @ToolComponent.Register
@@ -69,21 +68,29 @@ class ToolComponent(IComponent):
     def __init__(self) -> None:
         self._tools: dict[str, "BaseTool"] = {}
         """实例级工具实例注册表，隔离不同 Agent 的工具实例。"""
+        self._disabled: set[str] = set()
+        """实例级禁用工具名称集合，被禁用的工具不会出现在 GetAll/GetAllToolSpecs 等查询中。"""
         self._defaultTimeout: float | None = 300.0
         """全局默认工具超时秒数，None 表示不设限制。单工具可通过 timeout 类属性覆盖。"""
-        self._executionStats: dict[str, list[float]] = {}
-        """每个工具的执行耗时列表（仅保留最近 100 次）。"""
+        self._executionStats: dict[str, deque[float]] = {}
+        """每个工具的执行耗时队列（仅保留最近 100 次）。"""
         self._executionStatsLimit: int = 100
 
     # ---- 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
-        """挂载后初始化。"""
-        pass
+        """挂载后初始化，持有 Agent 引用供工具调度时注入。"""
+        self._agent = agent
 
     def OnDestroy(self) -> None:
-        """从 BaseAgent 卸载时回调，清空所有已注册工具实例。"""
+        """从 BaseAgent 卸载时回调，调用各工具清理钩子并清空实例。"""
+        for tool in self._tools.values():
+            try:
+                tool.OnDestroy()
+            except Exception:
+                pass
         self._tools.clear()
+        self._agent = None
 
     # ---- 装饰器注册（类方法） ----
 
@@ -96,9 +103,7 @@ class ToolComponent(IComponent):
         Returns:
             原样返回工具类，不改变其行为。
         """
-        toolName = getattr(toolClass, "name", "")
-        if not toolName:
-            raise ValueError(f"{toolClass.__name__} must define a non-empty 'name' class attribute")
+        toolName = toolClass.name
         cls._toolClasses[toolName] = toolClass
         return toolClass
 
@@ -125,6 +130,50 @@ class ToolComponent(IComponent):
         """移除指定工具（从实例注册中移除）。"""
         self._tools.pop(name, None)
 
+    # ---- 禁用 / 启用 ----
+
+    def Disable(self, name: str) -> None:
+        """禁用一个工具，使其不出现在 GetAll/GetAllToolSpecs 等查询结果中。
+
+        仅影响当前 ToolComponent 实例，不影响其他实例或类级注册表。
+        对已通过 RegisterTool 注册的实例工具同样生效。
+        """
+        self._disabled.add(name)
+
+    def DisableByCategory(self, category: EToolCategory) -> None:
+        """按分类批量禁用工具。
+
+        会遍历类级注册表 _toolClasses 和实例注册表 _tools，
+        将匹配 category 的工具名加入禁用集。
+        """
+        for toolName, toolClass in self._toolClasses.items():
+            if toolClass.category == category:
+                self._disabled.add(toolName)
+        for toolName, tool in self._tools.items():
+            if tool.category == category:
+                self._disabled.add(toolName)
+
+    def EnableByCategory(self, category: EToolCategory) -> None:
+        """按分类批量启用工具，对标 DisableByCategory 的逆操作。"""
+        for toolName, toolClass in self._toolClasses.items():
+            if toolClass.category == category:
+                self._disabled.discard(toolName)
+        for toolName, tool in self._tools.items():
+            if tool.category == category:
+                self._disabled.discard(toolName)
+
+    def Enable(self, name: str) -> None:
+        """重新启用一个已被禁用的工具。"""
+        self._disabled.discard(name)
+
+    def IsEnabled(self, name: str) -> bool:
+        """检查指定工具当前是否启用。"""
+        return name not in self._disabled
+
+    def GetDisabled(self) -> set[str]:
+        """返回当前被禁用的工具名称集合（副本）。"""
+        return set(self._disabled)
+
     # ---- 查询 ----
 
     def Get(self, name: str) -> "BaseTool | None":
@@ -132,7 +181,11 @@ class ToolComponent(IComponent):
 
         优先返回已实例化的工具，其次从注册类创建并缓存实例，
         确保同一名称始终返回同一实例。
+        被 Disable 的工具返回 None，视同不存在。
         """
+        if name in self._disabled:
+            return None
+
         if name in self._tools:
             return self._tools[name]
 
@@ -148,27 +201,36 @@ class ToolComponent(IComponent):
         """按名称获取工具类。"""
         return self._toolClasses.get(name)
 
-    def GetAll(self) -> dict[str, "BaseTool"]:
-        """获取所有工具实例（类注册的懒实例化并缓存，已注册实例直接复用）。"""
-        # 先将未实例化的类注册工具懒实例化并缓存
+    def _EnsureAllInstantiated(self) -> None:
+        """将未实例化的类注册工具懒实例化并缓存到实例表。
+
+        幂等操作：已实例化的工具跳过，仅处理新增的类注册项。
+        被 Disable 的工具跳过不实例化。
+        """
         for name, toolClass in self._toolClasses.items():
-            if name not in self._tools:
+            if name not in self._disabled and name not in self._tools:
                 self._tools[name] = toolClass()
+
+    def GetAll(self) -> dict[str, "BaseTool"]:
+        """获取所有工具实例（确保类注册工具已实例化后返回快照）。"""
+        self._EnsureAllInstantiated()
         return dict(self._tools)
 
     def GetByCategory(self, category: EToolCategory) -> list["BaseTool"]:
         """按分类获取工具实例。"""
+        self._EnsureAllInstantiated()
         result: list["BaseTool"] = []
-        for tool in self.GetAll().values():
+        for tool in self._tools.values():
             if tool.category == category:
                 result.append(tool)
         return result
 
     def GetByCategories(self, categories: list[EToolCategory]) -> list["BaseTool"]:
         """按多个分类获取工具实例。"""
-        result: list["BaseTool"] = []
+        self._EnsureAllInstantiated()
         catSet = set(categories)
-        for tool in self.GetAll().values():
+        result: list["BaseTool"] = []
+        for tool in self._tools.values():
             if tool.category in catSet:
                 result.append(tool)
         return result
@@ -181,11 +243,13 @@ class ToolComponent(IComponent):
         Returns:
             ToolSpec 列表，可用于 LLM function calling 绑定。
         """
-        return [tool.ToToolSpec() for tool in self.GetAll().values()]
+        self._EnsureAllInstantiated()
+        return [tool.ToToolSpec() for tool in self._tools.values()]
 
     def GetToolSpecsByCategory(self, category: EToolCategory) -> list[ToolSpec]:
         """按分类获取 ToolSpec。"""
-        return [tool.ToToolSpec() for tool in self.GetByCategory(category)]
+        self._EnsureAllInstantiated()
+        return [tool.ToToolSpec() for tool in self._tools.values() if tool.category == category]
 
     # ---- 调度分发 ----
 
@@ -205,6 +269,9 @@ class ToolComponent(IComponent):
         timeout = self._ResolveTimeout(tool)
         startTime = time.perf_counter()
 
+        # 注入 Agent 引用，使工具可通过 self._agent 访问 Agent 及组件
+        tool._agent = self._agent
+
         try:
             if timeout is not None:
                 result = await asyncio.wait_for(
@@ -219,9 +286,6 @@ class ToolComponent(IComponent):
         except asyncio.TimeoutError:
             elapsed = time.perf_counter() - startTime
             self._RecordExecution(toolCall.name, elapsed)
-            Logger.Warning(
-                f"Tool '{toolCall.name}' timed out after {timeout}s"
-            )
             return ToolResult.Fail(
                 f"Tool '{toolCall.name}' execution timed out after {timeout}s",
                 toolName=toolCall.name,
@@ -235,7 +299,7 @@ class ToolComponent(IComponent):
             )
 
     async def DispatchBatchAsync(self, toolCalls: list[ToolCall]) -> list[ToolResult]:
-        """批量并发分发多个工具调用。
+        """批量并发分发多个工具调用，异常隔离：单工具失败不取消其余任务。
 
         Args:
             toolCalls: LLM 返回的多个 ToolCall。
@@ -243,9 +307,17 @@ class ToolComponent(IComponent):
         Returns:
             与输入顺序对应的 ToolResult 列表。
         """
-        import asyncio as _asyncio
-        tasks = [self.DispatchAsync(tc) for tc in toolCalls]
-        return list(await _asyncio.gather(*tasks))
+        async def _SafeDispatch(tc: ToolCall) -> ToolResult:
+            try:
+                return await self.DispatchAsync(tc)
+            except Exception as exc:
+                return ToolResult.Fail(
+                    f"Tool execution error: {exc}",
+                    toolName=tc.name,
+                )
+
+        tasks = [_SafeDispatch(tc) for tc in toolCalls]
+        return list(await asyncio.gather(*tasks))
 
     # ---- 元数据 ----
 
@@ -263,36 +335,15 @@ class ToolComponent(IComponent):
         """清空实例注册（谨慎使用），类注册不受影响。"""
         self._tools.clear()
 
-    def LoadBuiltins(self) -> int:
-        """加载所有内置工具。
-
-        通过导入各工具模块触发 ``@ToolComponent.Register`` 装饰器注册到类级表。
-        装饰器注册是幂等的（类级 _toolClasses 跨实例与 Clear() 持久），
-        无需 importlib.reload（reload 非线程安全且会重复执行模块副作用）。
-
-        Returns:
-            加载的工具数量。
-        """
-        from .control import todoWriteTool  # noqa: F401
-        from .file import (  # noqa: F401
-            deleteFileTool,
-            grepCodeTool,
-            listDirTool,
-            readFileTool,
-            searchFileTool,
-            writeFileTool,
-        )
-        from .network import fetchContentTool, searchWebTool  # noqa: F401
-        from .shell import bashTool  # noqa: F401
-
-        return self.Count()
-
     # ---- 内部 ----
 
     def _allToolNames(self) -> list[str]:
-        """返回所有已注册工具名称（用于错误提示）。"""
-        return list(self._toolClasses.keys()) + [
-            name for name in self._tools if name not in self._toolClasses
+        """返回所有已启用工具名称（用于错误提示）。"""
+        return [
+            name for name in self._toolClasses if name not in self._disabled
+        ] + [
+            name for name in self._tools
+            if name not in self._toolClasses and name not in self._disabled
         ]
 
     def _ResolveTimeout(self, tool: "BaseTool") -> float | None:
@@ -319,12 +370,15 @@ class ToolComponent(IComponent):
     # ---- 执行统计 ----
 
     def _RecordExecution(self, toolName: str, elapsed: float) -> None:
-        """记录工具一次调度的耗时，每个工具仅保留最近 ``_executionStatsLimit`` 条。"""
-        bucket = self._executionStats.setdefault(toolName, [])
+        """记录工具一次调度的耗时，每个工具仅保留最近 ``_executionStatsLimit`` 条。
+
+        使用 deque(maxlen=N) 自动淘汰旧数据，O(1) 追加无需 del。
+        """
+        bucket = self._executionStats.get(toolName)
+        if bucket is None:
+            bucket = deque(maxlen=self._executionStatsLimit)
+            self._executionStats[toolName] = bucket
         bucket.append(elapsed)
-        excess = len(bucket) - self._executionStatsLimit
-        if excess > 0:
-            del bucket[:excess]
 
     def GetExecutionStats(self) -> dict[str, dict[str, float]]:
         """返回每个工具的执行耗时聚合指标。
@@ -351,4 +405,25 @@ class ToolComponent(IComponent):
         return f"ToolComponent(tools={self.Count()})"
 
     def __contains__(self, name: str) -> bool:
-        return name in self._tools or name in self._toolClasses
+        return name not in self._disabled and (name in self._tools or name in self._toolClasses)
+
+
+# 文件末尾触发 @Register 装饰器注册，必须在类定义完成后导入，避免循环依赖
+from .control import (  # noqa: F401, E402
+    todoWriteTool,
+    runWorkflowTool,
+    getWorkflowSchemaTool,
+    listWorkflowsTool,
+    cancelWorkflowTool,
+)
+from .file import (  # noqa: F401, E402
+    deleteFileTool,
+    globTool,
+    grepTool,
+    readTool,
+    searchCodebaseTool,
+    searchReplaceTool,
+    writeTool,
+)
+from .network import webFetchTool, webSearchTool  # noqa: F401, E402
+from .shell import shellTool, getTerminalOutputTool  # noqa: F401, E402

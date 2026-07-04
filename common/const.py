@@ -10,9 +10,11 @@ class ERoad(StrEnum):
     
     MODELS_JSON = "workspace/models.json"
     MEMORY_DIR = "workspace/memory/"
-    SKILLS_DIR = ".qoder/skills"
-    RULES_DIR = ".qoder/rules"
-    MCP_JSON_PATH = ".mcp.json"
+    MCP_JSON_PATH = "workspace/mcp.json"
+    STORE_PATH = "workspace/.store/"
+
+    SKILLS_DIR = "workspace/skills"
+    RULES_DIR = "workspace/rules"
 
 
 class ERole(StrEnum):

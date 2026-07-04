@@ -6,16 +6,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
-from .eStreamEventType import EStreamEventType
+from .workflowMessage import WorkflowMessage
 
 if TYPE_CHECKING:
     from common.cancellationToken import CancellationToken
     from .workflowGraph import WorkflowGraph
-
-# 节点流式事件回调签名: async(nodeId, eventType, data)
-NodeStreamCallback = Callable[[int, EStreamEventType, dict[str, Any]], Awaitable[None]]
+    from .workflowEventBus import WorkflowEventBus
 
 
 class WorkflowContext:
@@ -29,19 +27,20 @@ class WorkflowContext:
         await ctx.YieldOutputAsync("done")
 
     节点可通过 ctx.CancellationToken 获取取消令牌并透传给 LLM 调用。
-    节点可通过 ctx.OnNodeStreamAsync 推送流式事件（thinking / content chunk 等）。
+    流式事件通过 ctx.EventBus 同步推送。
     """
 
     def __init__(self, initialData: dict[str, Any] | None = None) -> None:
         self._data: dict[str, Any] = initialData.copy() if initialData else {}
-        self._pendingMessages: list[tuple[Any, list[int] | None]] = []
-        self._outputs: list[Any] = []
+        self._pendingMessages: list[tuple[WorkflowMessage, list[int] | None]] = []
+        self._outputs: list[WorkflowMessage] = []
         self._cancellationToken: Optional["CancellationToken"] = None
         self._currentNodeId: int = 0
         self._executionRound: int = 0
-        self._streamCallback: Optional[NodeStreamCallback] = None
+        self._eventBus: Optional["WorkflowEventBus"] = None
         self._graph: Optional["WorkflowGraph"] = None
-        self._onNodeEvent: Optional[Callable[[int, str], Awaitable[None]]] = None
+        self._currentDepth: int = 0
+        self._workflowId: int = 0
 
     # ---- KV 存储 ----
 
@@ -71,16 +70,16 @@ class WorkflowContext:
 
     # ---- 消息传递 ----
 
-    async def SendMessageAsync(self, message: Any, targetIds: list[int] | None = None) -> None:
+    async def SendMessageAsync(self, message: WorkflowMessage, targetIds: list[int] | None = None) -> None:
         """向下游节点发送消息。
 
         Args:
-            message: 要发送的消息体。
+            message: 要发送的 WorkflowMessage。
             targetIds: 目标节点 ID 列表（int），None 表示广播到所有下游。
         """
         self._pendingMessages.append((message, targetIds))
 
-    def ConsumeMessages(self) -> list[tuple[Any, list[int] | None]]:
+    def ConsumeMessages(self) -> list[tuple[WorkflowMessage, list[int] | None]]:
         """消费所有待发送消息（执行引擎使用）。"""
         messages = self._pendingMessages
         self._pendingMessages = []
@@ -93,7 +92,7 @@ class WorkflowContext:
         self._outputs.append(output)
 
     @property
-    def Outputs(self) -> list[Any]:
+    def Outputs(self) -> list[WorkflowMessage]:
         """获取所有已产出输出。"""
         return list(self._outputs)
 
@@ -125,22 +124,7 @@ class WorkflowContext:
         """注入图引用（仅 WorkflowExecutor 调用）。"""
         self._graph = graph
 
-    # ---- 节点事件回调 ----
-
-    @property
-    def OnNodeEvent(self) -> Optional[Callable[[int, str], Awaitable[None]]]:
-        """节点执行事件回调，供复合节点在执行子节点时通知前端。
-
-        回调签名: async(nodeId: int, status: str) -> None
-        由 WorkflowExecutor 在执行前注入。
-        """
-        return self._onNodeEvent
-
-    def SetOnNodeEvent(self, callback: Optional[Callable[[int, str], Awaitable[None]]]) -> None:
-        """设置节点事件回调（仅 WorkflowExecutor 调用）。"""
-        self._onNodeEvent = callback
-
-    # ---- 流式事件回调 ----
+    # ---- 运行时状态 ----
 
     @property
     def CurrentNodeId(self) -> int:
@@ -152,23 +136,45 @@ class WorkflowContext:
         """当前执行轮次（任意节点每执行一次 +1）。"""
         return self._executionRound
 
+    # ---- 事件总线 ----
+
     @property
-    def OnNodeStreamAsync(self) -> Optional[NodeStreamCallback]:
-        """节点流式事件回调，LLM 节点可通过此回调向前端推送增量内容。
+    def WorkflowId(self) -> int:
+        """当前所属工作流 ID，由 WorkflowExecutor 在执行前注入。"""
+        return self._workflowId
 
-        回调签名: async(nodeId: int, eventType: EStreamEventType, data: dict) -> None
+    def SetWorkflowId(self, workflowId: int) -> None:
+        """注入工作流 ID（仅 WorkflowExecutor 调用）。"""
+        self._workflowId = workflowId
+
+    @property
+    def EventBus(self) -> Optional["WorkflowEventBus"]:
+        """工作流级同步事件总线，由 WorkflowExecutor 在执行前注入。
+
+        节点可通过此总线同步推送流式事件（thinking / content chunk 等），
+        无需 asyncio.create_task 桥接。
         """
-        return self._streamCallback
+        return self._eventBus
 
-    def SetNodeStreamCallback(self, callback: Optional[NodeStreamCallback]) -> None:
-        """设置流式事件回调（仅 WorkflowExecutor 调用）。"""
-        self._streamCallback = callback
+    def SetEventBus(self, eventBus: "WorkflowEventBus") -> None:
+        """注入事件总线（仅 WorkflowExecutor 调用）。"""
+        self._eventBus = eventBus
+
+    @property
+    def CurrentDepth(self) -> int:
+        """当前执行深度（每进入子节点 +1，退出 -1），用于防止无限嵌套。"""
+        return self._currentDepth
 
     def _BeginNodeExecution(self, nodeId: int) -> int:
-        """进入节点执行：设置当前节点 ID，全局轮次 +1（仅 WorkflowExecutor 调用）。"""
+        """进入节点执行：设置当前节点 ID，全局轮次 +1，深度 +1（仅 WorkflowExecutor 调用）。"""
         self._currentNodeId = nodeId
         self._executionRound += 1
+        self._currentDepth += 1
         return self._executionRound
+
+    def _EndNodeExecution(self) -> None:
+        """退出节点执行：深度 -1（仅 WorkflowExecutor 调用）。"""
+        self._currentDepth -= 1
 
     # ---- 魔法方法 ----
 

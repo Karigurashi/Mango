@@ -133,7 +133,7 @@ class McpComponent(IComponent):
 
     # ---- 真实连接与工具发现 ----
 
-    _CONNECT_ALL_TIMEOUT = 60.0
+    _CONNECT_ALL_TIMEOUT = 30.0
 
     async def ConnectAllAsync(
         self,
@@ -165,67 +165,83 @@ class McpComponent(IComponent):
         self,
         cancellationToken: Optional[CancellationToken] = None,
     ) -> list["McpTool"]:
-        """ConnectAllAsync 内部实现，不含超时包装。"""
+        """ConnectAllAsync 内部实现，不含超时包装。
+
+        所有已启用 stdio Server 并行启动、握手、发现工具，
+        单 Server 异常隔离，不影响其余 Server。
+        """
+        servers = self.GetEnabled()
+        if not servers:
+            return []
+
+        tasks = [
+            self._ConnectOneServerAsync(s, cancellationToken)
+            for s in servers
+        ]
+        results: list[tuple[str, list["McpTool"]]] = await asyncio.gather(
+            *tasks, return_exceptions=True,
+        )
+
+        allTools: list["McpTool"] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                Logger.Warning(f"MCP connect task failed with exception: {result}")
+                continue
+            serverName, tools = result
+            if tools:
+                allTools.extend(tools)
+        return allTools
+
+    async def _ConnectOneServerAsync(
+        self,
+        server: McpServerConfig,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> tuple[str, list["McpTool"]]:
+        """连接单台 MCP Server 并发现工具，异常隔离：失败返回空列表。
+
+        仅当 StartAsync → InitializeAsync → ListToolsAsync 全链路成功
+        后才将 client 加入 _clients 并返回工具列表，中途失败则清理资源。
+        """
         from .mcpClient import McpStdioClient
         from .mcpTool import McpTool
 
+        if server.transport != EMcpTransport.STDIO:
+            Logger.Warning(
+                f"MCP[{server.name}]: transport '{server.transport.ToLabel()}' "
+                f"not supported yet (only stdio), skipped"
+            )
+            return server.name, []
+
+        launchCommand = server.GetLaunchCommand()
+        if not launchCommand:
+            Logger.Warning(f"MCP[{server.name}]: missing launch command, skipped")
+            return server.name, []
+
+        client = McpStdioClient(server.name, launchCommand, server.ResolveEnv())
+        if not await client.StartAsync(cancellationToken):
+            return server.name, []
+
+        if not await client.InitializeAsync(cancellationToken):
+            client.Terminate()
+            return server.name, []
+
+        discovered = await client.ListToolsAsync(cancellationToken)
         tools: list["McpTool"] = []
-        for server in self.GetEnabled():
-            if server.transport != EMcpTransport.STDIO:
-                Logger.Warning(
-                    f"MCP[{server.name}]: transport '{server.transport.value}' "
-                    f"not supported yet (only stdio), skipped"
-                )
+        for spec in discovered:
+            name = spec.get("name", "")
+            if not name:
                 continue
+            tools.append(McpTool(
+                client=client,
+                serverName=server.name,
+                remoteName=name,
+                description=spec.get("description", ""),
+                parameters=spec.get("inputSchema", {}),
+            ))
 
-            launchCommand = server.GetLaunchCommand()
-            if not launchCommand:
-                Logger.Warning(f"MCP[{server.name}]: missing launch command, skipped")
-                continue
-
-            client = McpStdioClient(server.name, launchCommand, server.ResolveEnv())
-            started = await client.StartAsync(cancellationToken)
-            if not started:
-                continue
-            self._clients.append(client)
-
-            if not await client.InitializeAsync(cancellationToken):
-                client.Terminate()
-                continue
-
-            discovered = await client.ListToolsAsync(cancellationToken)
-            for spec in discovered:
-                name = spec.get("name", "")
-                if not name:
-                    continue
-                tools.append(McpTool(
-                    client=client,
-                    serverName=server.name,
-                    remoteName=name,
-                    description=spec.get("description", ""),
-                    parameters=spec.get("inputSchema", {}),
-                ))
-            Logger.Info(f"MCP[{server.name}]: connected, {len(discovered)} tool(s) discovered")
-
-        return tools
-
-    # ---- Context 注入辅助 ----
-
-    def GetToolDescriptions(self) -> str:
-        """获取所有已启用 Server 的工具描述文本，用于注入 system prompt。
-
-        Returns:
-            格式化的工具清单文本。
-        """
-        enabled = self.GetEnabled()
-        if not enabled:
-            return "No MCP servers configured."
-
-        lines = []
-        for server in enabled:
-            transportLabel = f"[{server.transport.value}]"
-            lines.append(f"  - {server.name} {transportLabel}")
-        return "\n".join(lines)
+        self._clients.append(client)
+        Logger.Info(f"MCP[{server.name}]: connected, {len(discovered)} tool(s) discovered")
+        return server.name, tools
 
     # ---- 管理 ----
 

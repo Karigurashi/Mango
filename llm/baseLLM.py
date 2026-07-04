@@ -28,13 +28,13 @@ class BaseLLM(ABC):
 
     @property
     @abstractmethod
-    def ProviderName(self) -> str:
+    def providerName(self) -> str:
         """Provider 标识，如 'openai'、'anthropic'、'gemini'。"""
         ...
 
     @property
     @abstractmethod
-    def ModelName(self) -> str:
+    def modelName(self) -> str:
         """当前使用的模型名。"""
         ...
 
@@ -99,7 +99,7 @@ class BaseLLM(ABC):
     # ———— 累计用量 ————
 
     @property
-    def TotalUsage(self) -> TokenUsage:
+    def totalUsage(self) -> TokenUsage:
         """累计 Token 用量。
 
         默认返回空 TokenUsage()。Provider 子类（BaseProvider）应覆盖此属性，

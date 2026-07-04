@@ -42,7 +42,7 @@ class OpenAIProvider(BaseProvider):
         )
 
     @property
-    def ProviderName(self) -> str:
+    def providerName(self) -> str:
         return "openai"
 
     def Close(self) -> None:
@@ -57,10 +57,13 @@ class OpenAIProvider(BaseProvider):
     def _ExtractUsage(usage: object) -> Optional[TokenUsage]:
         if usage is None:
             return None
+        promptDetails = getattr(usage, "prompt_tokens_details", None)
+        cachedTokens = getattr(promptDetails, "cached_tokens", 0) or 0 if promptDetails else 0
         return TokenUsage(
             promptTokens=getattr(usage, "prompt_tokens", 0),
             completionTokens=getattr(usage, "completion_tokens", 0),
             totalTokens=getattr(usage, "total_tokens", 0),
+            cacheReadInputTokens=cachedTokens,
         )
 
     # ---- 流式工具调用分片拼装 ----

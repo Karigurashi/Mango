@@ -9,29 +9,34 @@
     - NodeRegistry 全局注册表 + 装饰器注册，支持外部扩展。
 """
 
-from .core.workflow import Workflow
+from .workflow import Workflow, EWorkflowStatus
 from .core.baseNode import BaseNode, handler
 from .core.workflowContext import WorkflowContext
 from .core.workflowEdge import WorkflowEdge
 from .core.workflowGraph import WorkflowGraph
 from .core.workflowExecutor import WorkflowExecutor
+from .core.workflowEventBus import WorkflowEventBus
+from .core.workflowStreamEvent import WorkflowStreamEvent, EStreamEventType
+from .core.workflowMessage import WorkflowMessage
 from .core.eNodeCategory import ENodeCategory
-from .core.eStreamEventType import EStreamEventType
 from .core.nodeRegistry import NodeRegistry
 
 # 导入所有内置节点以触发注册
 from .nodes import action as _action_nodes
 from .nodes import composite as _composite_nodes
-from .nodes import condition as _condition_nodes
 
 __all__ = [
     "Workflow",
+    "EWorkflowStatus",
     "BaseNode",
     "handler",
     "WorkflowContext",
     "WorkflowEdge",
     "WorkflowGraph",
     "WorkflowExecutor",
+    "WorkflowEventBus",
+    "WorkflowStreamEvent",
+    "WorkflowMessage",
     "ENodeCategory",
     "EStreamEventType",
     "NodeRegistry",

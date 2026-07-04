@@ -1,107 +1,108 @@
-"""Agent 配置 —— 统一集中配置，控制 ReAct 循环行为、Token 预算、上下文引擎、重试策略。"""
+"""Agent 运行时统一配置 —— 单一扁平 dataclass。
+
+按功能域分组，所有字段均为不可变类型（int/float/bool/str/tuple/NoneType），
+因此 copy.copy() 浅拷贝等价于 copy.deepcopy()，但性能更优。
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 import copy
+from pickle import TRUE
 
 from common.const import ERoad
 
 
+# ---- 内置默认压缩 Prompt ----
+
+DEFAULT_BATCH_SUMMARY_PROMPT = (
+    "Your task is to create a detailed summary of the conversation so far, "
+    "paying close attention to the user's explicit requests and your previous actions. "
+    "This summary should be thorough in capturing technical details, code patterns, "
+    "and architectural decisions that would be essential for continuing development work without losing context.\n\n"
+    "Before providing your final summary, wrap your analysis in <analysis> tags "
+    "to organize your thoughts and ensure you've covered all necessary points. "
+    "In your analysis process:\n\n"
+    "1. Chronologically analyze each message and section of the conversation. "
+    "For each section thoroughly identify:\n"
+    "- The user's explicit requests and intents\n"
+    "- Your approach to addressing the user's requests\n"
+    "- Key decisions, technical concepts and code patterns\n"
+    "- Specific details like: file names, full code snippets, function signatures, file edits\n"
+    "- Errors that you ran into and how you fixed them\n"
+    "- Pay special attention to specific user feedback that you received, "
+    "especially if the user told you to do something differently.\n\n"
+    "2. Double-check for technical accuracy and completeness, "
+    "addressing each required element thoroughly.\n\n"
+    "Your summary should include the following sections:\n\n"
+    "1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail\n"
+    "2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.\n"
+    "3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. "
+    "Pay special attention to the most recent messages and include full code snippets where applicable "
+    "and include a summary of why this file read or edit is important.\n"
+    "4. Errors and fixes: List all errors that you ran into, and how you fixed them. "
+    "Pay special attention to specific user feedback that you received, "
+    "especially if the user told you to do something differently.\n"
+    "5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.\n"
+    "6. All user messages: List ALL user messages that are not tool results. "
+    "These are critical for understanding the users' feedback and changing intent.\n"
+    "7. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.\n"
+    "8. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, "
+    "paying special attention to the most recent messages from both user and assistant. "
+    "Include file names and code snippets where applicable.\n"
+    "9. Optional Next Step: List the next step related to the most recent work, "
+    "only if directly in line with the user's latest explicit request. "
+    "Include verbatim quotes from the conversation showing where you left off.\n\n"
+    "Please provide your summary based on the conversation so far, "
+    "following this structure and ensuring precision and thoroughness in your response."
+)
+
+
 @dataclass
 class AgentConfig:
-    """Agent 运行时统一配置，所有字段提供合理默认值。
-
-    所有字段均为不可变类型（int/float/bool/str/tuple/NoneType），
-    因此 copy.copy() 浅拷贝等价于 copy.deepcopy()，但性能更优。
-
-    Attributes:
-        maxTurns: 单次 Run 最大推理轮次，防止无限循环。
-        tokenBudget: ContextComponent 组装预算（0 则用 maxTokens - reserveTokens）。
-        autoCompact: 回合后是否自动触发上下文压缩。
-        workspaceRoot: 工作区根目录。
-        skillsDir: Skill 扫描目录（``**/SKILL.md``）。
-        rulesDir: Rule 扫描目录（``*.rule.md``）。
-        mcpJsonPath: MCP 配置文件路径（``.mcp.json``）。
-
-        重试参数已迁移至 llm/llmConfig.py 的 LLMConfig（models.json 全局配置），
-        Agent 层不再持有 LLM 重试配置。
-
-        maxTokens: Token 预算上限（默认 128000）。
-        reserveTokens: 为模型回复预留的 token 数（默认 4096）。
-        compactThreshold: 触发压缩的上下文占用率阈值（0.0-1.0，默认 0.85）。
-        recentTurnCount: "最近 N 轮" 的 N 值，影响 LOD 判定（默认 5）。
-        lod3LineThreshold: 触发 LOD 3 外存的行数阈值（默认 500）。
-        lod3SizeThreshold: 触发 LOD 3 外存的字节数阈值（默认 102400）。
-        keepRecentTurns: 压缩时保留的最近完整轮数（默认 5）。
-        summaryMaxTokens: 单条消息摘要 LLM 最大输出 token（默认 512）。
-        batchSummaryMaxTokens: 批量压缩摘要 LLM 最大输出 token（默认 2048）。
-        compactionPrompt: LLM 压缩时的自定义 prompt（None 则用内置默认）。
-        enablePersist: 是否启用大结果落盘+预览（默认 True）。
-        persistCharThreshold: 触发落盘的字符数阈值（默认 50000）。
-        persistPreviewChars: 预览截断字符数（默认 500）。
-        storeDir: 内容外存目录（默认 ".contex/store"）。
-        storeMaxAge: 外存文件最大保留时间，单位秒（默认 86400，24h）。
-        storeMaxFileSize: 单文件最大字节数（超限截断，默认 10MB）。
-        storeMaxTotalSize: 外存目录总容量上限（超限LRU淘汰，默认 500MB）。
-        memoryDir: 记忆持久化目录。
-        runTimeout: 单次 Run 最大执行秒数，0 表示不限。
-        logDir: 结构化日志输出目录（默认 ".contex/log"）。
-        logFormat: 日志输出格式，"TEXT" 或 "JSON"（默认 "TEXT"）。
-        logFlushPerTurn: 是否每轮 AfterTurn 自动刷新日志到文件（默认 True）。
+    """Agent 运行时统一配置。
+    
+    按功能域分组的扁平 dataclass，所有字段均为不可变类型。
     """
+    
+    # -- 循环行为 --
+    maxTurns: int = 99                      # 单次 Run 最大推理轮次，-1 表示无限制
+    tokenBudget: int = 0                    # ContextComponent 组装预算（0 则用 maxTokens - reserveTokens）
+    runTimeout: float = 0.0                 # 单次 Run 最大执行秒数，0 表示不限
+    
+    # -- 路径配置 --
+    workspaceRoot: str = str(ERoad.WORKSPACE)           # 工作区根目录
+    skillsDir: str = str(ERoad.SKILLS_DIR)              # Skill 扫描目录（**/SKILL.md）
+    rulesDir: str = str(ERoad.RULES_DIR)                # Rule 扫描目录（.md / .mdc）
+    mcpJsonPath: str = str(ERoad.MCP_JSON_PATH)         # MCP 配置文件路径（.mcp.json）
+    memoryDir: str = str(ERoad.MEMORY_DIR)              # 记忆持久化目录
+    
+    # -- Token 预算 --
+    maxTokens: int = 128000                # Token 预算上限
+    reserveTokens: int = 4096              # 为模型回复预留的 token 数
+    
+    # -- 压缩参数 --
+    compactThreshold: float = 0.85         # 触发压缩的上下文占用率阈值（0.0-1.0）
+    keepRecentTurns: int = 3               # 压缩时保留的最近完整轮数
+    coldOffloadGraceSeconds: int = 300     # 冷卸载宽限期（秒）
+    autoColdOffload: bool = True           # 是否在每轮用户对话前自动冷卸载（True 开启）
+    summaryMaxTokens: int = 1024           # 单条消息摘要 LLM 最大输出 token
+    batchSummaryMaxTokens: int = 8192      # 批量压缩摘要 LLM 最大输出 token
+    compactionPrompt: str | None = None    # LLM 压缩时的自定义 prompt（None 则用内置默认）
+    
+    # -- 落盘参数 --
+    enablePersist: bool = True             # 是否启用大结果落盘+预览
+    persistCharThreshold: int = 25000      # 触发落盘的字符数阈值
+    persistPreviewChars: int = 5000        # 预览截断字符数
+    storeDir: str = str(ERoad.STORE_PATH)    # 内容外存目录
+    storeMaxTotalSize: int = 50 * 1024 * 1024       # 外存目录总容量上限（超限LRU淘汰，默认50MB）
+    storeMaxFileCount: int = 100           # 外存目录最大文件数（超限LRU淘汰，默认100）
+    
+    # -- 子系统开关 --
+    enableWorkflow: bool = False            # 是否启用 Workflow 子系统（开启后注入 run_workflow 等编排工具）
 
-    # ---- 内置默认压缩 Prompt ----
-
-    DEFAULT_SINGLE_SUMMARY_PROMPT = (
-        "Summarize the following agent message in 1-3 concise sentences. "
-        "Preserve key decisions, factual findings, and open questions. "
-        "Drop redundant reasoning and irrelevant details."
-    )
-
-    DEFAULT_BATCH_SUMMARY_PROMPT = (
-        "Summarize the following conversation history. "
-        "Preserve all key decisions, important facts, unresolved questions, "
-        "and the overall task context. Be concise but complete."
-    )
-
-    # ---- Agent 循环行为 ----
-
-    maxTurns: int = 25
-    tokenBudget: int = 0
-    autoCompact: bool = True
-    workspaceRoot: str = str(ERoad.WORKSPACE)
-    skillsDir: str = str(ERoad.SKILLS_DIR)
-    rulesDir: str = str(ERoad.RULES_DIR)
-    mcpJsonPath: str = str(ERoad.MCP_JSON_PATH)
-
-    # ---- 上下文引擎 ----
-
-    maxTokens: int = 128000
-    reserveTokens: int = 4096
-    compactThreshold: float = 0.85
-    recentTurnCount: int = 5
-    lod3LineThreshold: int = 500
-    lod3SizeThreshold: int = 102400
-    keepRecentTurns: int = 5
-    summaryMaxTokens: int = 512
-    batchSummaryMaxTokens: int = 2048
-    compactionPrompt: str | None = None
-    enablePersist: bool = True
-    persistCharThreshold: int = 50000
-    persistPreviewChars: int = 500
-    storeDir: str = ".contex/store"
-    storeMaxAge: int = 86400
-    storeMaxFileSize: int = 10 * 1024 * 1024  # 单文件最大字节数（超限截断）
-    storeMaxTotalSize: int = 500 * 1024 * 1024  # 外存目录总容量上限（超限LRU淘汰）
-    memoryDir: str = ""
-    runTimeout: float = 0.0  # 单次 Run 最大执行秒数，0 表示不限
-
-    # ---- 结构化日志 ----
-
-    logDir: str = ".contex/log"  # 结构化日志输出目录
-    logFormat: str = "TEXT"  # 输出格式：TEXT（人类可读）或 JSON（机器解析）
-    logFlushPerTurn: bool = True  # 每轮 AfterTurn 自动刷新日志到文件
+    # -- 外部密钥 --
+    tavilyApiKey: str = "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"  # Tavily Search API 密钥
 
     # ---- 属性 ----
 
@@ -115,24 +116,27 @@ class AgentConfig:
             return self.tokenBudget
         return self.maxTokens - self.reserveTokens
 
+    @property
+    def tavilyApiKeyResolved(self) -> str:
+        """解析 Tavily API Key，优先环境变量 TAVILY_API_KEY。"""
+        import os
+        return os.environ.get("TAVILY_API_KEY", self.tavilyApiKey)
+
     # ---- 校验 ----
 
     def Validate(self) -> list[str]:
-        """校验配置合法性，返回错误列表（空列表表示通过）。
-
-        覆盖关键数值字段的边界条件，确保 Agent 启动前配置可用。
-        """
+        """校验所有配置字段，返回错误信息列表。"""
         errors: list[str] = []
 
         # 循环行为
-        if self.maxTurns <= 0:
-            errors.append(f"maxTurns must be > 0, got {self.maxTurns}")
+        if self.maxTurns < -1 or self.maxTurns == 0:
+            errors.append(f"maxTurns must be > 0 or -1 (unlimited), got {self.maxTurns}")
         if self.tokenBudget < 0:
             errors.append(f"tokenBudget must be >= 0, got {self.tokenBudget}")
         if self.runTimeout < 0:
             errors.append(f"runTimeout must be >= 0, got {self.runTimeout}")
 
-        # 上下文引擎
+        # Token 预算
         if self.maxTokens <= 0:
             errors.append(f"maxTokens must be > 0, got {self.maxTokens}")
         if self.reserveTokens < 0:
@@ -141,18 +145,16 @@ class AgentConfig:
             errors.append(
                 f"reserveTokens ({self.reserveTokens}) must be < maxTokens ({self.maxTokens})"
             )
+
+        # 压缩参数
         if not (0.0 <= self.compactThreshold <= 1.0):
             errors.append(
                 f"compactThreshold must be in [0.0, 1.0], got {self.compactThreshold}"
             )
-        if self.recentTurnCount <= 0:
-            errors.append(f"recentTurnCount must be > 0, got {self.recentTurnCount}")
         if self.keepRecentTurns < 0:
             errors.append(f"keepRecentTurns must be >= 0, got {self.keepRecentTurns}")
-        if self.lod3LineThreshold <= 0:
-            errors.append(f"lod3LineThreshold must be > 0, got {self.lod3LineThreshold}")
-        if self.lod3SizeThreshold <= 0:
-            errors.append(f"lod3SizeThreshold must be > 0, got {self.lod3SizeThreshold}")
+        if self.coldOffloadGraceSeconds < 0:
+            errors.append(f"coldOffloadGraceSeconds must be >= 0, got {self.coldOffloadGraceSeconds}")
         if self.summaryMaxTokens <= 0:
             errors.append(f"summaryMaxTokens must be > 0, got {self.summaryMaxTokens}")
         if self.batchSummaryMaxTokens <= 0:
@@ -160,7 +162,7 @@ class AgentConfig:
                 f"batchSummaryMaxTokens must be > 0, got {self.batchSummaryMaxTokens}"
             )
 
-        # 外存
+        # 落盘参数
         if self.persistCharThreshold <= 0:
             errors.append(
                 f"persistCharThreshold must be > 0, got {self.persistCharThreshold}"
@@ -169,20 +171,10 @@ class AgentConfig:
             errors.append(
                 f"persistPreviewChars must be >= 0, got {self.persistPreviewChars}"
             )
-        if self.storeMaxAge < 0:
-            errors.append(f"storeMaxAge must be >= 0, got {self.storeMaxAge}")
-        if self.storeMaxFileSize <= 0:
-            errors.append(
-                f"storeMaxFileSize must be > 0, got {self.storeMaxFileSize}"
-            )
         if self.storeMaxTotalSize <= 0:
             errors.append(
                 f"storeMaxTotalSize must be > 0, got {self.storeMaxTotalSize}"
             )
-
-        # 日志
-        if self.logFormat not in ("TEXT", "JSON"):
-            errors.append(f"logFormat must be 'TEXT' or 'JSON', got {self.logFormat!r}")
 
         return errors
 
@@ -190,92 +182,74 @@ class AgentConfig:
 
     @staticmethod
     def FromDict(data: dict) -> AgentConfig:
-        """从字典反序列化配置。"""
+        """从字典反序列化配置。
+
+        支持三种格式：
+        1. 扁平格式：所有字段位于顶层。
+        2. 嵌套格式（loop/context/persist）：向后兼容旧配置。
+        3. 混合格式：部分嵌套 + 部分扁平。
+        """
+        # 嵌套格式：从子字典中提取字段
+        loopData = data.get("loop", {}) if isinstance(data.get("loop"), dict) else data
+        contextData = data.get("context", {}) if isinstance(data.get("context"), dict) else data
+        persistData = data.get("persist", {}) if isinstance(data.get("persist"), dict) else data
+
+        # 优先级：嵌套子字典 > 顶层扁平 > 默认值
         return AgentConfig(
-            maxTurns=data.get("maxTurns", 25),
-            tokenBudget=data.get("tokenBudget", 0),
-            autoCompact=data.get("autoCompact", True),
-            workspaceRoot=data.get("workspaceRoot", str(ERoad.WORKSPACE)),
-            skillsDir=data.get("skillsDir", str(ERoad.SKILLS_DIR)),
-            rulesDir=data.get("rulesDir", str(ERoad.RULES_DIR)),
-            mcpJsonPath=data.get("mcpJsonPath", str(ERoad.MCP_JSON_PATH)),
-            maxTokens=data.get("maxTokens", 128000),
-            reserveTokens=data.get("reserveTokens", 4096),
-            compactThreshold=data.get("compactThreshold", 0.85),
-            recentTurnCount=data.get("recentTurnCount", 5),
-            lod3LineThreshold=data.get("lod3LineThreshold", 500),
-            lod3SizeThreshold=data.get("lod3SizeThreshold", 102400),
-            keepRecentTurns=data.get("keepRecentTurns", 5),
-            summaryMaxTokens=data.get("summaryMaxTokens", 512),
-            batchSummaryMaxTokens=data.get("batchSummaryMaxTokens", 2048),
-            compactionPrompt=data.get("compactionPrompt"),
-            enablePersist=data.get("enablePersist", True),
-            persistCharThreshold=data.get("persistCharThreshold", 50000),
-            persistPreviewChars=data.get("persistPreviewChars", 500),
-            storeDir=data.get("storeDir", ".contex/store"),
-            storeMaxAge=data.get("storeMaxAge", 86400),
-            storeMaxFileSize=data.get("storeMaxFileSize", 10 * 1024 * 1024),
-            storeMaxTotalSize=data.get("storeMaxTotalSize", 500 * 1024 * 1024),
-            memoryDir=data.get("memoryDir", ""),
-            runTimeout=data.get("runTimeout", 0.0),
-            logDir=data.get("logDir", ".contex/log"),
-            logFormat=data.get("logFormat", "TEXT"),
-            logFlushPerTurn=data.get("logFlushPerTurn", True),
+            # 循环行为
+            maxTurns=loopData.get("maxTurns", data.get("maxTurns", 25)),
+            tokenBudget=loopData.get("tokenBudget", data.get("tokenBudget", 0)),
+            runTimeout=loopData.get("runTimeout", data.get("runTimeout", 0.0)),
+            # 路径配置
+            workspaceRoot=loopData.get("workspaceRoot", data.get("workspaceRoot", str(ERoad.WORKSPACE))),
+            skillsDir=loopData.get("skillsDir", data.get("skillsDir", str(ERoad.SKILLS_DIR))),
+            rulesDir=loopData.get("rulesDir", data.get("rulesDir", str(ERoad.RULES_DIR))),
+            mcpJsonPath=loopData.get("mcpJsonPath", data.get("mcpJsonPath", str(ERoad.MCP_JSON_PATH))),
+            memoryDir=loopData.get("memoryDir", data.get("memoryDir", str(ERoad.MEMORY_DIR))),
+            # Token 预算
+            maxTokens=contextData.get("maxTokens", data.get("maxTokens", 128000)),
+            reserveTokens=contextData.get("reserveTokens", data.get("reserveTokens", 4096)),
+            # 压缩参数
+            compactThreshold=contextData.get("compactThreshold", data.get("compactThreshold", 0.85)),
+            keepRecentTurns=contextData.get("keepRecentTurns", data.get("keepRecentTurns", 5)),
+            coldOffloadGraceSeconds=contextData.get(
+                "coldOffloadGraceSeconds", data.get("coldOffloadGraceSeconds", 300)
+            ),
+            autoColdOffload=contextData.get("autoColdOffload", data.get("autoColdOffload", True)),
+            summaryMaxTokens=contextData.get("summaryMaxTokens", data.get("summaryMaxTokens", 512)),
+            batchSummaryMaxTokens=contextData.get(
+                "batchSummaryMaxTokens", data.get("batchSummaryMaxTokens", 2048)
+            ),
+            compactionPrompt=contextData.get("compactionPrompt", data.get("compactionPrompt")),
+            # 落盘参数
+            enablePersist=persistData.get("enablePersist", data.get("enablePersist", True)),
+            persistCharThreshold=persistData.get(
+                "persistCharThreshold", data.get("persistCharThreshold", 25000)
+            ),
+            persistPreviewChars=persistData.get(
+                "persistPreviewChars", data.get("persistPreviewChars", 5000)
+            ),
+            storeDir=persistData.get("storeDir", data.get("storeDir", str(ERoad.STORE_PATH))),
+            storeMaxTotalSize=persistData.get(
+                "storeMaxTotalSize", data.get("storeMaxTotalSize", 500 * 1024 * 1024)
+            ),
+            storeMaxFileCount=persistData.get(
+                "storeMaxFileCount", data.get("storeMaxFileCount", 100)
+            ),
+            # 子系统开关
+            enableWorkflow=data.get("enableWorkflow", False),
+            # 外部密钥
+            tavilyApiKey=data.get("tavilyApiKey", ""),
         )
 
     def ToDict(self) -> dict:
-        """序列化为字典。"""
-        return {
-            "maxTurns": self.maxTurns,
-            "tokenBudget": self.tokenBudget,
-            "autoCompact": self.autoCompact,
-            "workspaceRoot": self.workspaceRoot,
-            "skillsDir": self.skillsDir,
-            "rulesDir": self.rulesDir,
-            "mcpJsonPath": self.mcpJsonPath,
-            "maxTokens": self.maxTokens,
-            "reserveTokens": self.reserveTokens,
-            "compactThreshold": self.compactThreshold,
-            "recentTurnCount": self.recentTurnCount,
-            "lod3LineThreshold": self.lod3LineThreshold,
-            "lod3SizeThreshold": self.lod3SizeThreshold,
-            "keepRecentTurns": self.keepRecentTurns,
-            "summaryMaxTokens": self.summaryMaxTokens,
-            "batchSummaryMaxTokens": self.batchSummaryMaxTokens,
-            "compactionPrompt": self.compactionPrompt,
-            "enablePersist": self.enablePersist,
-            "persistCharThreshold": self.persistCharThreshold,
-            "persistPreviewChars": self.persistPreviewChars,
-            "storeDir": self.storeDir,
-            "storeMaxAge": self.storeMaxAge,
-            "storeMaxFileSize": self.storeMaxFileSize,
-            "storeMaxTotalSize": self.storeMaxTotalSize,
-            "memoryDir": self.memoryDir,
-            "runTimeout": self.runTimeout,
-            "logDir": self.logDir,
-            "logFormat": self.logFormat,
-            "logFlushPerTurn": self.logFlushPerTurn,
-        }
-
-    def __repr__(self) -> str:
-        return (
-            f"AgentConfig(maxTurns={self.maxTurns}, "
-            f"tokenBudget={self.tokenBudget}, "
-            f"autoCompact={self.autoCompact}, "
-            f"maxTokens={self.maxTokens})"
-        )
-
-    # ---- 默认配置工厂 ----
-
-    _DEFAULT_TEMPLATE: AgentConfig = None  # type: ignore[assignment]  延迟到类定义完成后赋值
+        """序列化为扁平字典。"""
+        return {f.name: getattr(self, f.name) for f in fields(self)}
 
     @classmethod
     def Default(cls) -> AgentConfig:
-        """返回默认配置的深拷贝，每次调用返回独立实例，防止全局污染。
-
-        调用方可以安全地修改返回的实例而不会影响其他 Agent。
-        """
-        return copy.copy(cls._DEFAULT_TEMPLATE)  # 浅拷贝即可：所有字段均为不可变类型
+        """返回默认配置的浅拷贝，每次调用返回独立实例，防止全局污染。"""
+        return copy.copy(cls.DEFAULT)
 
 
-AgentConfig._DEFAULT_TEMPLATE = AgentConfig()
+AgentConfig.DEFAULT = AgentConfig()

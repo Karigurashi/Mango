@@ -1,29 +1,31 @@
-"""HarnessComponent —— 多层 Context 注入管道，将各组件的 LOD0 块组装后 Ingest 到 ContextComponent。
+"""HarnessComponent —— 多层 Context 注入管道，将各组件的 RESIDENT 块组装为 ContextMessage 列表后写入 Session。
 
-挂载到 BaseAgent 后自动获取 ContextComponent / RuleComponent / SkillComponent /
-McpComponent / ToolComponent / DataComponent，通过 BuildAsync 完成一次性的 LOD0 装填。
+挂载到 BaseAgent 后自动获取 RuleComponent / SkillComponent /
+McpComponent / ToolComponent / DataComponent / SessionComponent，通过 BuildAsync 完成一次性的 RESIDENT 装填。
 """
 
 from __future__ import annotations
 
 import os
 import platform
-import sys
-from typing import Optional
-
-from agent.component.contex.contextComponent import ContextComponent
+from datetime import datetime, timezone
+from agent.component.contex.contextMessage import ContextMessage
 from agent.component.contex.eContextLodLevel import EContextLodLevel
 from agent.component.data.dataComponent import DataComponent
+from agent.component.llm.llmComponent import LLMComponent
 from agent.component.mcp.mcpComponent import McpComponent
 from agent.component.rule.ruleComponent import RuleComponent
+from agent.component.session.sessionComponent import SessionComponent
 from agent.component.skill.skillComponent import SkillComponent
+from agent.component.tool.eToolCategory import EToolCategory
 from agent.component.tool.toolComponent import ToolComponent
 from agent.core.baseComponent import IComponent
 from common.const import ERole
+from llm.provider.chatMessage import ChatMessage
 
 
 class HarnessComponent(IComponent):
-    """将各 Component 的 LOD0 块组装为 System 消息并 Ingest 到 ContextComponent。
+    """将各 Component 的 RESIDENT 块组装为 ContextMessage 列表并写入 Session。
 
     挂载后通过 BuildAsync 完成一次性装填：
     - skills 前缀 / MCP 工具描述 / Memory 上下文块 / 环境快照
@@ -38,21 +40,23 @@ class HarnessComponent(IComponent):
         count = await harness.BuildAsync()
     """
 
-    _dataComp: Optional[DataComponent]
-    _engine: Optional[ContextComponent]
-    _ruleComp: Optional[RuleComponent]
-    _skillComp: Optional[SkillComponent]
-    _mcpComp: Optional[McpComponent]
-    _toolComp: Optional[ToolComponent]
+    _dataComp: DataComponent
+    _sessionComp: SessionComponent
+    _ruleComp: RuleComponent
+    _skillComp: SkillComponent
+    _mcpComp: McpComponent
+    _toolComp: ToolComponent
+    _llmComp: LLMComponent
     _built: bool
 
     def __init__(self) -> None:
-        self._dataComp = None
-        self._engine = None
-        self._ruleComp = None
-        self._skillComp = None
-        self._mcpComp = None
-        self._toolComp = None
+        self._dataComp: DataComponent  # type: ignore[no-redef]
+        self._sessionComp: SessionComponent  # type: ignore[no-redef]
+        self._ruleComp: RuleComponent  # type: ignore[no-redef]
+        self._skillComp: SkillComponent  # type: ignore[no-redef]
+        self._mcpComp: McpComponent  # type: ignore[no-redef]
+        self._toolComp: ToolComponent  # type: ignore[no-redef]
+        self._llmComp: LLMComponent  # type: ignore[no-redef]
         self._built = False
 
     # ---- IComponent 生命周期 ----
@@ -60,12 +64,12 @@ class HarnessComponent(IComponent):
     def OnInitialize(self, agent: BaseAgent) -> None:
         """挂载后初始化，自动注入各依赖 Component。"""
         self._dataComp = agent.GetComponent(DataComponent)
-        self._engine = agent.GetComponent(ContextComponent)
+        self._sessionComp = agent.GetComponent(SessionComponent)
         self._ruleComp = agent.GetComponent(RuleComponent)
         self._skillComp = agent.GetComponent(SkillComponent)
         self._mcpComp = agent.GetComponent(McpComponent)
         self._toolComp = agent.GetComponent(ToolComponent)
-        self._built = False
+        self._llmComp = agent.GetComponent(LLMComponent)
 
     def OnDestroy(self) -> None:
         """从 BaseAgent 卸载时回调，重置构建标记以允许重建。"""
@@ -75,96 +79,89 @@ class HarnessComponent(IComponent):
 
     async def BuildAsync(
         self,
-        reloadExtensions: bool = True,
-    ) -> int:
-        """组装并 Ingest 全部 LOD0 Context 块。
+        force: bool = False,
+    ) -> None:
+        """组装全部 RESIDENT Context 块并写入 Session。
 
         幂等调用：若已成功构建则跳过，避免重复创建 MCP 子进程与重复注册工具。
-        可通过 OnDestroy() 重置构建状态后重新调用。
+        设置 force=True 可强制重建（热重载 rules / skills / MCP 配置变更）。
 
         Args:
             reloadExtensions: 是否从 AgentConfig 指定路径重新加载 extension 注册表。
-
-        Returns:
-            本次 Ingest 的 System 块数量。
+            force: True 时跳过 _built 守卫强制重建。
         """
-        if self._built:
-            return 0
+        if self._built and not force:
+            return
 
-        if reloadExtensions:
-            self._ReloadExtensions()
+        self._toolComp.Clear()
+        self._ReloadExtensions()
+        self._sessionComp.ActiveSession.ReplaceResidents(
+            self._BuildResidentMessages(),
+        )
 
-        # 加载内置工具（触发 @ToolComponent.Register 装饰器注册到类级表）
-        if self._toolComp is not None:
-            self._toolComp.LoadBuiltins()
+        if self._skillComp.Count() > 0:
+            from agent.component.skill.loadSkillTool import LoadSkillTool
+            loadSkillTool = LoadSkillTool(self._skillComp)
+            self._toolComp.RegisterTool(loadSkillTool)
 
-        count = 0
-        session = self._engine.Session
+        # 真实连接 MCP Server，发现并注册其工具为可调用工具
+        mcpTools = await self._mcpComp.ConnectAllAsync()
+        for mcpTool in mcpTools:
+            self._toolComp.RegisterTool(mcpTool)
 
-        if session.memory is not None:
-            for block in session.memory.LoadContextBlocks():
-                if block.strip():
-                    self._IngestSystem(block)
-                    count += 1
+        # ---- 根据配置控制 Workflow 工具启停 ----
+        if self._dataComp.config.enableWorkflow:
+            self._toolComp.EnableByCategory(EToolCategory.WORKFLOW)
+        else:
+            self._toolComp.DisableByCategory(EToolCategory.WORKFLOW)
 
-        if self._ruleComp is not None:
-            alwaysBody = self._ruleComp.GetAlwaysApplyBody()
-            if alwaysBody.strip():
-                self._IngestSystem(alwaysBody)
-                count += 1
-
-        if self._skillComp is not None:
-            skillPrefixes = self._skillComp.GetAllPrefixes()
-            if skillPrefixes and skillPrefixes != "No skills available.":
-                self._IngestSystem(
-                    f"<available_skills>\n{skillPrefixes}\n</available_skills>",
-                )
-                count += 1
-
-            if self._skillComp.Count() > 0 and self._toolComp is not None:
-                from agent.component.skill.loadSkillTool import LoadSkillTool
-                loadSkillTool = LoadSkillTool(self._skillComp)
-                self._toolComp.RegisterTool(loadSkillTool)
-
-        if self._mcpComp is not None:
-            mcpDesc = self._mcpComp.GetToolDescriptions()
-            if mcpDesc and mcpDesc != "No MCP servers configured.":
-                self._IngestSystem(
-                    f"<mcp_servers>\n{mcpDesc}\n</mcp_servers>",
-                )
-                count += 1
-
-            # 真实连接 MCP Server，发现并注册其工具为可调用工具
-            if self._toolComp is not None:
-                mcpTools = await self._mcpComp.ConnectAllAsync()
-                for mcpTool in mcpTools:
-                    self._toolComp.RegisterTool(mcpTool)
-
-        envSnapshot = self._BuildEnvironmentSnapshot()
-        self._IngestSystem(envSnapshot)
-        count += 1
+        # ---- 绑定工具到 LLMComponent ----
+        toolSpecs = self._toolComp.GetAllToolSpecs()
+        if toolSpecs:
+            self._llmComp.BindTools(toolSpecs)
 
         self._built = True
-        return count
 
     # ---- 内部 ----
 
-    def _IngestSystem(self, content: str) -> None:
-        """Ingest 一条 System 消息（LOD0）。"""
-        self._engine.Ingest(
-            ERole.SYSTEM,
-            content,
+    def _BuildResidentMessages(self) -> list[ContextMessage]:
+        """收集全部 RESIDENT 块并构建为 ContextMessage 列表。"""
+        residents: list[ContextMessage] = []
+
+        envBlock = self._BuildEnvironmentSnapshot()
+        residents.append(self._BuildResidentMessage(envBlock))
+
+        for block in self._sessionComp.memory.LoadContextBlocks():
+            if block.strip():
+                residents.append(self._BuildResidentMessage(block))
+
+        alwaysBody = self._ruleComp.GetAlwaysApplyBody()
+        if alwaysBody.strip():
+            residents.append(self._BuildResidentMessage(alwaysBody))
+
+        skillPrefixes = self._skillComp.GetAllPrefixes()
+        if skillPrefixes:
+            residents.append(self._BuildResidentMessage(
+                f"<available_skills>\n{skillPrefixes}\n</available_skills>",
+            ))
+
+        return residents
+
+    def _BuildResidentMessage(self, content: str) -> ContextMessage:
+        """创建一条 RESIDENT System 消息。"""
+        return ContextMessage.Create(
+            chatMessage=ChatMessage(role=ERole.SYSTEM, content=content),
             lodLevel=EContextLodLevel.RESIDENT,
         )
 
     def _BuildEnvironmentSnapshot(self) -> str:
         """生成环境快照文本块。"""
-        workspaceRoot = self._dataComp.config.workspaceRoot
+        now = datetime.now(timezone.utc).astimezone()
+        localTime = now.strftime("%Y-%m-%d")
         lines = [
             "<environment>",
             f"OS: {platform.system()} {platform.release()}",
-            f"Python: {sys.version.split()[0]}",
-            f"Workspace: {workspaceRoot}",
+            f"Current time: {localTime}",
             "</environment>",
         ]
         return "\n".join(lines)
@@ -173,19 +170,17 @@ class HarnessComponent(IComponent):
         """从 AgentConfig 指定路径重新加载 extension 注册表。"""
         config = self._dataComp.config
 
-        if config.rulesDir and os.path.isdir(config.rulesDir) and self._ruleComp is not None:
+        if config.rulesDir and os.path.isdir(config.rulesDir):
             self._ruleComp.Clear()
             self._ruleComp.LoadFromDirectory(config.rulesDir)
 
-        if config.skillsDir and os.path.isdir(config.skillsDir) and self._skillComp is not None:
+        if config.skillsDir and os.path.isdir(config.skillsDir):
             self._skillComp.Clear()
             self._skillComp.LoadFromDirectory(config.skillsDir)
 
-        if config.mcpJsonPath and os.path.isfile(config.mcpJsonPath) and self._mcpComp is not None:
+        if config.mcpJsonPath and os.path.isfile(config.mcpJsonPath):
             self._mcpComp.Clear()
             self._mcpComp.LoadFromMCPJson(config.mcpJsonPath)
 
     def __repr__(self) -> str:
-        config = self._dataComp.config if self._dataComp else None
-        workspaceRoot = config.workspaceRoot if config else ""
-        return f"HarnessComponent(workspace={workspaceRoot!r})"
+        return f"HarnessComponent(workspace={self._dataComp.config.workspaceRoot!r})"

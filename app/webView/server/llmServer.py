@@ -1,5 +1,7 @@
 """LLM Chat API 后端 —— FastAPI 服务，对接 LLMManager 和 Workflow 执行引擎。"""
 
+from __future__ import annotations
+
 import sys
 import os
 import time
@@ -20,17 +22,18 @@ from llm import LLMManager
 from common.cancellationToken import CancellationToken
 from llm.provider.chatMessage import ChatMessage
 from llm.llmRequestParams import LLMRequestParams
-from workflow import Workflow, WorkflowContext
-from workflow.core.workflowExecutor import WorkflowExecutor
-from workflow.core.workflowStreamEvent import EStreamEventType, WorkflowStreamEvent
-from workflow.core.nodeRegistry import NodeRegistry
-from workflow.core.workflowEventBus import WorkflowEventBus
+from task.workflow import Workflow, WorkflowContext, WorkflowSerializer
+from task.workflow.core.workflowExecutor import WorkflowExecutor
+from task.workflow.core.nodeRegistry import NodeRegistry
+from task.workflow.core.eTaskProgressKind import ETaskProgressKind
+from task.workflow.core.taskProgressData import TaskProgressData
 
 from agent import Agent
 from agent.component.eventBus.agentStreamEvent import AgentStreamEvent, EAgentStreamEventType
 from agent.component.eventBus.eventBusComponent import EventBusComponent
 from agent.component.data.agentConfig import AgentConfig
 from agent.component.data.eAgentState import EAgentState
+from common import SerializeUtil
 
 app = FastAPI(title="Workflow LLM Chat API")
 
@@ -210,20 +213,26 @@ async def run_workflow_stream(req: RunRequest):
         edgeData = req.edges if req.edges else req.connections
         wfJson["edges"] = edgeData
 
-        def onStreamEvent(event: WorkflowStreamEvent):
-            if event.eventType == EStreamEventType.NODE_STATUS:
+        def _OnWfProgress(data: TaskProgressData) -> None:
+            if data.kind == ETaskProgressKind.NODE_STATUS:
                 queue.put_nowait({
                     "type": "node",
-                    "nodeId": event.nodeId,
-                    "status": event.status.name if event.status else "",
+                    "nodeId": data.nodeId,
+                    "status": data.status,
                 })
+            elif data.kind in (
+                ETaskProgressKind.FLOW_START,
+                ETaskProgressKind.FLOW_DONE,
+                ETaskProgressKind.FLOW_CANCEL,
+            ):
+                pass  # handled by done/error/cancelled below
             else:
                 queue.put_nowait({
                     "type": "stream",
-                    "nodeId": event.nodeId,
-                    "agentId": event.agentId,
-                    "eventType": event.eventType.name.lower(),
-                    "text": event.message,
+                    "nodeId": data.nodeId,
+                    "agentId": data.agentId,
+                    "eventType": data.kind.name.lower(),
+                    "text": data.message,
                 })
 
         def addLog(level: str, msg: str):
@@ -233,17 +242,22 @@ async def run_workflow_stream(req: RunRequest):
             try:
                 addLog("info", f"工作流 '{wfJson['name']}' 开始执行 — {len(req.nodes)} 个节点, {len(edgeData)} 条连线")
 
-                wf = Workflow.FromJson(wfJson)
+                wf = WorkflowSerializer.FromDict(wfJson)
+
                 entryNodes = wf.graph.GetEntryNodes()
                 addLog("info", f"入口节点: {entryNodes if entryNodes else '无'}")
 
-                # 创建工作流事件总线并订阅同步回调
-                eventBus = WorkflowEventBus()
-                eventBus.AddListener(onStreamEvent)
+                def onProgress(data) -> None:
+                    _OnWfProgress(data)
 
                 ctx = WorkflowContext()
                 start = time.perf_counter()
-                ctx = await WorkflowExecutor.ExecuteAsync(wf, ctx, eventBus, cancellationToken)
+                ctx = await WorkflowExecutor.ExecuteAsync(
+                    wf,
+                    ctx,
+                    cancellationToken,
+                    progressSink=onProgress,
+                )
                 elapsed = time.perf_counter() - start
                 addLog("info", f"执行完成，耗时 {elapsed:.2f}s")
 
@@ -325,13 +339,14 @@ async def run_workflow(req: RunRequest):
         addLog("info", f"工作流 '{wfJson['name']}' 开始执行 — {len(req.nodes)} 个节点, {len(edgeData)} 条连线")
 
         # 创建工作流并执行
-        wf = Workflow.FromJson(wfJson)
+        wf = WorkflowSerializer.FromDict(wfJson)
 
         entryNodes = wf.graph.GetEntryNodes()
         addLog("info", f"入口节点: {entryNodes if entryNodes else '无'}")
 
+        ctx = WorkflowContext()
         start = time.perf_counter()
-        ctx = await wf.ExecuteAsync()
+        ctx = await WorkflowExecutor.ExecuteAsync(wf, ctx, CancellationToken())
         elapsed = time.perf_counter() - start
         addLog("info", f"执行完成，耗时 {elapsed:.2f}s")
 
@@ -392,7 +407,7 @@ class AgentManager:
 
     def __init__(self) -> None:
         self._agent: Agent | None = None
-        self._config: AgentConfig = AgentConfig.Default()
+        self._config: AgentConfig = AgentConfig()
 
     @classmethod
     def Get(cls) -> "AgentManager":
@@ -410,10 +425,10 @@ class AgentManager:
         return self._agent
 
     def GetConfig(self) -> dict:
-        return self._config.ToDict()
+        return SerializeUtil.ToDict(self._config)
 
     def UpdateConfig(self, data: dict) -> None:
-        self._config = AgentConfig.FromDict(data)
+        self._config = SerializeUtil.FromDict(data, AgentConfig)
         self._agent = None  # 配置变更后重建 Agent
 
     def GetExtensions(self) -> dict:

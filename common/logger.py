@@ -22,7 +22,7 @@ class Logger:
     def _EnsureLoaded(cls) -> None:
         if cls._instance is not None:
             return
-        cls._instance = logging.getLogger("Brain")
+        cls._instance = logging.getLogger("Mango")
         cls._instance.setLevel(logging.DEBUG)
         if not cls._instance.handlers:
             handler = logging.StreamHandler(sys.stderr)

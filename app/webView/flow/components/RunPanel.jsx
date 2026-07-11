@@ -29,10 +29,10 @@ export default function RunPanel({ nodes, edges, name, variables, setNodeStatuse
 
   const runSimulation = useCallback(async () => {
     const entryNodes = nodes.filter(
-      (n) => n.data?.nodeType === 'Action/BeginPlay'
+      (n) => n.data?.nodeType === 'Action/Begin'
     );
     if (entryNodes.length === 0) {
-      setLogEntries([{ id: Date.now(), type: 'error', msg: '未找到 BeginPlay 入口节点！请从节点面板拖入 动作 > Begin Play。', time: Date.now() }]);
+      setLogEntries([{ id: Date.now(), type: 'error', msg: '未找到 Begin 入口节点！请从节点面板拖入 动作 > Begin。', time: Date.now() }]);
       return;
     }
 

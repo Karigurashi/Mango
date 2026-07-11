@@ -85,12 +85,8 @@ class DataComponent(IComponent):
     # ---- 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
-        """挂载后初始化，校验配置合法性。"""
-        errors = self._config.Validate()
-        if errors:
-            raise ValueError(
-                f"AgentConfig validation failed: {'; '.join(errors)}"
-            )
+        """挂载后回调。"""
+        pass
 
     def OnDestroy(self) -> None:
         """从 BaseAgent 卸载时回调。"""

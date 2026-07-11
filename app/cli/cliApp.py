@@ -1,49 +1,39 @@
-"""CliApp —— CLI REPL 主编排器。
+"""CliApp —— CLI REPL 主编排器，继承 BaseChannel。
 
-创建 Agent、订阅渲染器、驱动 REPL 循环、管理信号与取消。
-对标 Claude Code CLI 交互模式：斜杠指令 + 普通消息 + Ctrl+C 取消 +
-运行时消息队列（Agent 执行期间用户可继续输入，消息自动入队依次处理）。
+作为 BaseChannel 的 CLI 平台适配器：
+- 单群模式（groupId="cli"），一个 Agent 实例服务终端用户。
+- 消息前缀匹配（/）走指令分发，否则走 Agent 执行。
+- Agent 事件通过 OnAgentEventSync 转发给 CliRenderer 实时渲染。
+- 保留 CLI 特有交互层：REPL 循环、Ctrl+C 信号。
+
+对标 Claude Code CLI 交互模式：斜杠指令 + 普通消息 + Ctrl+C 取消。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from operator import truediv
 import signal
 import sys
-import threading
 import traceback
 from typing import Optional
 
-from agent import (
-    AgentManager,
-    EventBusComponent,
-    LLMComponent,
-    SessionComponent,
-)
-
+from agent import Agent, AgentManager, AgentStreamEvent, LLMComponent, SessionComponent
 from agent.component.data import AgentConfig
 from common.cancellationToken import CancellationToken
 from common.logger import Logger
 
-from .builtinCommands import RegisterBuiltinCommands
+from ..channel import BaseChannel, ChannelConfig, ChannelMessage, EChannelState
 from .cliCommand import CliContext
-from .cliCommandRegistry import CliCommandRegistry
 from .cliConfig import CliConfig
 from .cliRenderer import CliRenderer
-from .eCliState import ECliState
 
 
-class CliApp:
-    """CLI REPL 主编排器。
+class CliApp(BaseChannel):
+    """CLI REPL 主编排器 —— BaseChannel 的终端适配器。
 
-    创建 Agent 实例、订阅渲染器到 EventBusComponent、
-    驱动 REPL 循环（输入 → 分发斜杠指令或执行 Agent），
-    管理 Ctrl+C 信号与 CancellationToken 生命周期。
-
-    Agent 执行期间用户可继续输入消息，消息自动入队，
-    当前轮结束后依次处理队列中的消息。
+    创建单群（groupId="cli"）Channel，Agent 事件转发给 CliRenderer，
+    斜杠指令通过 BaseChannel 指令系统分发。
 
     Usage::
 
@@ -51,175 +41,139 @@ class CliApp:
         app.Run()  # 同步入口，内部调用 asyncio.run()
     """
 
+    CLI_GROUP_ID: str = "cli"
+
     def __init__(
         self,
         modelName: Optional[str] = None,
         config: Optional[CliConfig] = None,
     ) -> None:
-        self._config = config or CliConfig()
+        super().__init__(ChannelConfig(
+            modelName=modelName,
+            enableWorkflow=True,
+            commandPrefix="/",
+        ))
 
-        agentConfig = AgentConfig()
-        agentConfig.enableWorkflow = True
+        self._cliConfig: CliConfig = config or CliConfig()
+        self._renderer: CliRenderer = CliRenderer(self._cliConfig)
+        self._activeToken: Optional[CancellationToken] = None
 
-        self._agent = AgentManager.CreateAgent(modelName, agentConfig)
-        self._renderer = CliRenderer(self._config)
-        self._registry = CliCommandRegistry()
-        self._state = ECliState.IDLE
-        self._cancellationToken: Optional[CancellationToken] = None
-        self._messageQueue: asyncio.Queue[str] = asyncio.Queue()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # 创建 CLI 单群（触发 CreateAgent + OnGroupCreated）
+        self._cliGroup = self.EnsureGroup(self.CLI_GROUP_ID, "CLI")
 
-        # 订阅渲染器到 Agent 事件总线
-        self._agent.GetComponent(EventBusComponent).AddListener(self._renderer.OnEvent)
-
-        # 注册内置指令
-        RegisterBuiltinCommands(self._registry)
-
-    # ---- 同步入口 ----
-
-    def Run(self) -> None:
-        """同步入口，内部启动 asyncio 事件循环。"""
-        try:
-            asyncio.run(self.RunAsync())
-        except KeyboardInterrupt:
-            print()
-
-    # ---- 异步入口 ----
-
-    async def RunAsync(self) -> None:
-        """异步启动 REPL 主循环。
-
-        启动 daemon 线程持续读取 stdin，与 Agent 执行并发运行。
-        Agent 执行期间用户输入自动进入消息队列，
-        当前轮结束后依次处理队列中的消息。
-        """
-        Logger.SetLevel(logging.WARNING)  # CLI 模式下抑制 INFO 日志，仅保留告警/错误
+        Logger.SetLevel(logging.WARNING)
         self._EnsureUtf8Stdout()
         self._PrintBanner()
-
-        # 保存事件循环引用，供 _InputThreadFunc 跨线程调度
-        self._loop = asyncio.get_running_loop()
-
-        # 安装统一 SIGINT 处理器（根据状态分流：RUNNING→取消 / IDLE→退出）
         signal.signal(signal.SIGINT, self._OnInterrupt)
 
-        # 启动 daemon 线程持续读取 stdin（daemon 保证主线程退出时不阻塞）
-        readerThread = threading.Thread(target=self._InputThreadFunc, daemon=True)
-        readerThread.start()
+    # ---- BaseChannel 钩子 ----
 
+    def CreateAgent(self) -> Agent:
+        """override: 创建带 workflow 的 Agent。"""
+        agentConfig = AgentConfig()
+        agentConfig.enableWorkflow = self._config.enableWorkflow
+        return AgentManager.CreateAgent(self._config.modelName, agentConfig)
+
+    def OnAgentEventSync(self, groupId: str, event: AgentStreamEvent) -> None:
+        """override: Agent 事件 → CliRenderer 实时渲染。"""
+        self._renderer.OnEvent(event)
+
+    def CreateCommandContext(self, groupContext, message: ChannelMessage) -> CliContext:
+        """override: 返回 CliContext（终端即时输出）。"""
+        return CliContext(
+            channel=self,
+            groupContext=groupContext,
+            message=message,
+            registry=self._commandRegistry,
+            cliConfig=self._cliConfig,
+            renderer=self._renderer,
+        )
+
+    async def OnSendResponseAsync(
+        self,
+        groupId: str,
+        content: str,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> None:
+        """override: CLI 指令通过 CliContext.Print* 直接输出，不需要异步投递。"""
+        pass
+
+    # ---- 便捷访问 ----
+
+    @property
+    def _agent(self) -> Agent:
+        """CLI 群组的 Agent 实例。"""
+        return self._cliGroup.agent
+
+
+    async def OnStartAsync(
+        self,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> None:
+        """override: CLI 主循环，阻塞直到退出。
+
+        REPL 循环驱动：读取用户输入 → 指令分发或 Agent 执行。
+        /exit 指令或 Ctrl+C（空闲时）设置 STOPPING 退出循环。
+        """
         try:
-            while self._state != ECliState.EXITING:
+            while self._state == EChannelState.RUNNING:
                 self._PrintPrompt()
-                userInput = await self._messageQueue.get()
+                userInput = await asyncio.get_running_loop().run_in_executor(
+                    None, sys.stdin.readline,
+                )
+                if not userInput:  # EOF
+                    self._state = EChannelState.STOPPING
+                    break
+                userInput = userInput.rstrip('\n\r')
                 if not userInput:
                     continue
-
-                if userInput.startswith('/'):
-                    await self._HandleCommandAsync(userInput)
-                else:
-                    await self._RunAgentAsync(userInput)
-                    # Agent 执行完毕后，排空在此期间入队的消息
-                    await self._DrainQueueAsync()
+                await self._ProcessInputAsync(userInput)
         finally:
-            pass
+            await self.StopAsync()
+            self._PrintGoodbye()
 
-        self._PrintGoodbye()
+    # ---- 输入处理 ----
 
-    # ---- 输入线程 ----
+    async def _ProcessInputAsync(self, userInput: str) -> None:
+        """处理一条用户输入（指令或消息）。
 
-    def _InputThreadFunc(self) -> None:
-        """Daemon 线程：阻塞式读取 stdin，通过 run_coroutine_threadsafe 入队。
-
-        使用 sys.stdin.readline() 替代 input()，避免 input() 的 prompt 参数
-        在 Agent 流式输出期间在终端打印多余提示符。
+        Args:
+            userInput: 用户原始输入。
         """
-        loop = self._loop
-        while True:
-            try:
-                line = sys.stdin.readline()
-                if not line:  # EOF (Ctrl+Z on Windows, Ctrl+D on Unix)
-                    loop.call_soon_threadsafe(self._messageQueue.put_nowait, '/exit')
-                    break
-                line = line.rstrip('\n\r')
-                if line:
-                    loop.call_soon_threadsafe(self._messageQueue.put_nowait, line)
-            except Exception:
-                break
+        isCommand = userInput.startswith(self._config.commandPrefix)
+        msg = ChannelMessage(
+            groupId=self.CLI_GROUP_ID,
+            userId="user",
+            content=userInput,
+        )
 
-    # ---- 队列排空 ----
-
-    async def _DrainQueueAsync(self) -> None:
-        """排空消息队列中等待处理的消息。
-
-        Agent 执行期间用户可能输入了多条消息，此方法依次处理。
-        处理期间用户仍可继续输入，新消息将在下一轮被处理。
-        """
-        while not self._messageQueue.empty():
-            userInput = self._messageQueue.get_nowait()
-            if not userInput:
-                continue
-            if userInput.startswith('/'):
-                await self._HandleCommandAsync(userInput)
-            else:
-                await self._RunAgentAsync(userInput)
-
-    # ---- 指令分发 ----
-
-    async def _HandleCommandAsync(self, userInput: str) -> None:
-        """解析并分发斜杠指令，处理 exit 请求。"""
-        ctx = CliContext(self._agent, self._config, self._renderer, self._registry)
-        handled = await self._registry.DispatchAsync(userInput, ctx)
-        if handled and ctx.WantsExit:
-            self._state = ECliState.EXITING
-
-    # ---- Agent 执行 ----
-
-    async def _RunAgentAsync(self, message: str) -> None:
-        """启动 Agent 流式执行。"""
-        self._cancellationToken = CancellationToken()
-        self._state = ECliState.RUNNING
+        if not isCommand:
+            self._activeToken = CancellationToken()
 
         try:
-            await self._agent.RunStreamAsync(message, self._cancellationToken)
+            await self.ReceiveMessageAsync(msg, self._activeToken)
         except Exception:
             traceback.print_exc()
         finally:
-            self._state = ECliState.IDLE
-            self._cancellationToken = None
-
-        # 本轮用量页脚
-        self._PrintUsageFooter()
+            if not isCommand:
+                self._activeToken = None
+                self._PrintUsageFooter()
 
     # ---- 信号处理 ----
 
     def _OnInterrupt(self, signum: int, frame: object) -> None:
-        """统一 SIGINT 处理器，根据当前状态分流。
+        """统一 SIGINT 处理器，根据 Agent 忙闲状态分流。
 
-        - RUNNING: 首次触发取消 token，Agent 优雅退出。
-        - CANCELLING: 二次触发强制退出。
-        - IDLE: 直接退出 REPL。
+        - Agent 忙: 取消当前执行。
+        - Agent 闲: 直接退出 REPL。
         """
-        if self._state == ECliState.RUNNING:
-            if self._cancellationToken is not None and not self._cancellationToken.IsCancellationRequested:
-                self._state = ECliState.CANCELLING
-                self._cancellationToken.Cancel()
-                c = self._config
-                sys.stdout.write(f"\n{c.Color('[Cancelling...]', c.AMBER)}\n")
-                sys.stdout.flush()
-        elif self._state == ECliState.CANCELLING:
-            c = self._config
-            sys.stdout.write(f"\n{c.Color('[Force exit]', c.RED)}\n")
+        if self._activeToken is not None:
+            self._activeToken.Cancel()
+            c = self._cliConfig
+            sys.stdout.write(f"\n{c.Color('[Cancelling...]', c.AMBER)}\n")
             sys.stdout.flush()
-            self._state = ECliState.EXITING
-            self._WakeUpMainLoop()
         else:
-            # IDLE 状态下 Ctrl+C 退出
-            self._state = ECliState.EXITING
-            self._WakeUpMainLoop()
-
-    def _WakeUpMainLoop(self) -> None:
-        """向消息队列放入空串唤醒主循环（使其从 queue.get() 中解挂）。"""
-        self._messageQueue.put_nowait('')
+            self._state = EChannelState.STOPPING
 
     # ---- Banner / Prompt / Goodbye ----
 
@@ -231,25 +185,24 @@ class CliApp:
 
     def _PrintGoodbye(self) -> None:
         """打印退出信息。"""
-        c = self._config
+        c = self._cliConfig
         sys.stdout.write(c.Dim(f"\n  {c.BOX_BL}{c.BOX_H * 20} See you {c.BOX_BR}\n\n"))
         sys.stdout.flush()
 
     def _PrintPrompt(self) -> None:
         """打印 REPL 提示符。
 
-        IDLE 时显示紫色箭头，RUNNING 时不显示提示符
-        （用户可直接输入，消息自动入队）。
+        IDLE 时显示紫色箭头，RUNNING 时不显示提示符。
         """
-        if self._state != ECliState.IDLE:
+        if self._activeToken is not None:
             return
-        c = self._config
+        c = self._cliConfig
         sys.stdout.write(f"{c.Color(c.ICON_PROMPT, c.PURPLE)} ")
         sys.stdout.flush()
 
     def _PrintUsageFooter(self) -> None:
         """打印本轮 Token 用量页脚。"""
-        if not self._config.showTokenUsage:
+        if not self._cliConfig.showTokenUsage:
             return
         llmComp = self._agent.GetComponent(LLMComponent)
         modelName = llmComp.modelName

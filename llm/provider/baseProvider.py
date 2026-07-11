@@ -1,7 +1,7 @@
 """Provider 抽象基类。
 
 连接池、重试、超时由官方 SDK 接管，框架层额外提供：
-- InvokeAsync / StreamAsync 内置指数退避重试（由 models.json maxRetries 控制，0=不重试）
+- InvokeAsync / StreamAsync 内置指数退避重试（由 settings.json maxRetries 控制，0=不重试）
 - CancellationToken 取消机制
 - asyncio.wait_for 超时包装（双重保险）
 - asyncio.CancelledError 清理处理
@@ -189,7 +189,7 @@ class BaseProvider(BaseLLM):
     ) -> ChatResponse:
         """异步非流式调用，内置指数退避重试。
 
-        重试行为由 models.json 的 maxRetries 控制：设为 0 则不重试，
+        重试行为由 settings.json 的 maxRetries 控制：设为 0 则不重试，
         直接委托给子类 _InvokeCoreAsync。
         """
         async for chunk in self._RetryCallCoreAsync(
@@ -209,7 +209,7 @@ class BaseProvider(BaseLLM):
     ) -> AsyncIterator[ChatChunk]:
         """异步流式调用，内置指数退避重试。
 
-        重试行为由 models.json 的 maxRetries 控制：设为 0 则不重试，
+        重试行为由 settings.json 的 maxRetries 控制：设为 0 则不重试，
         直接委托给子类 _StreamCoreAsync。
         """
         async for chunk in self._RetryCallCoreAsync(

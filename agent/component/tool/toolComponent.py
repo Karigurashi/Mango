@@ -409,13 +409,7 @@ class ToolComponent(IComponent):
 
 
 # 文件末尾触发 @Register 装饰器注册，必须在类定义完成后导入，避免循环依赖
-from .control import (  # noqa: F401, E402
-    todoWriteTool,
-    runWorkflowTool,
-    getWorkflowSchemaTool,
-    listWorkflowsTool,
-    cancelWorkflowTool,
-)
+from .control import todoWriteTool  # noqa: F401, E402
 from .file import (  # noqa: F401, E402
     deleteFileTool,
     globTool,
@@ -427,3 +421,11 @@ from .file import (  # noqa: F401, E402
 )
 from .network import webFetchTool, webSearchTool  # noqa: F401, E402
 from .shell import shellTool, getTerminalOutputTool  # noqa: F401, E402
+from .task import (  # noqa: F401, E402
+    createTaskTool,
+    deleteTaskTool,
+    runWorkflowTool,
+    getWorkflowSchemaTool,
+    listTasksTool,
+    cancelWorkflowTool,
+)

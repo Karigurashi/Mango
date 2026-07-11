@@ -109,10 +109,11 @@ class Agent(BaseAgent):
         """
         if self._runLock is None:
             self._runLock = asyncio.Lock()
-        if self._runLock.locked():
-            self._EmitEvent(AgentStreamEvent.ErrorEvent("Agent is already running, concurrent re-entry is not allowed"))
-            return
         async with self._runLock:
+            # 事件循环已就绪：恢复定时任务并挂上 Cron
+            from agent.component.schedule.scheduleComponent import ScheduleComponent
+            self.GetComponent(ScheduleComponent)
+
             normalExit = False
             try:
                 await self._RunReActCoreAsync(userMessage, cancellationToken, stream=stream)

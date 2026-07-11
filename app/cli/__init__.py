@@ -1,28 +1,28 @@
 """Agent CLI 终端模块 —— 对标 Claude Code 交互模式的 REPL 终端。
 
-提供 CliApp 主编排器、CliRenderer 流式渲染引擎、斜杠指令系统、
-ANSI 主题配置与状态机。
+基于 BaseChannel 框架，CliApp 作为 CLI 平台适配器：
+单群模式（groupId="cli"），斜杠指令 + 普通消息 + Ctrl+C 取消。
 
 Usage::
 
-    from agent.cli import CliApp
+    from app.cli import CliApp
     app = CliApp("deepseek-high")
     app.Run()
 """
 
+from ..channel import Command, CommandRegistry
 from .cliApp import CliApp
-from .cliCommand import CliCommand, CliContext
-from .cliCommandRegistry import CliCommandRegistry
+from .cliCommand import CliContext
 from .cliConfig import CliConfig
 from .cliRenderer import CliRenderer
 from .eCliState import ECliState
 
 __all__ = [
     "CliApp",
-    "CliCommand",
     "CliContext",
-    "CliCommandRegistry",
     "CliConfig",
     "CliRenderer",
     "ECliState",
+    "Command",
+    "CommandRegistry",
 ]

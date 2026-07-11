@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
 
 from .eMcpTransport import EMcpTransport
 
@@ -53,47 +52,6 @@ class McpServerConfig:
         self.env = env or {}
         self.scope = scope
         self.enabled = enabled
-
-    # ---- 序列化 ----
-
-    def ToDict(self) -> dict[str, Any]:
-        """导出为 .mcp.json 兼容的字典格式。"""
-        result: dict[str, Any] = {
-            "name": self.name,
-            "type": self.transport.ToLabel(),
-            "scope": self.scope,
-            "enabled": self.enabled,
-        }
-        if self.transport == EMcpTransport.STDIO:
-            if self.command:
-                result["command"] = self.command
-            if self.args:
-                result["args"] = self.args
-            if self.env:
-                result["env"] = self.env
-        elif self.transport in (EMcpTransport.HTTP, EMcpTransport.SSE):
-            if self.url:
-                result["url"] = self.url
-            if self.env:
-                result["env"] = self.env
-        return result
-
-    @staticmethod
-    def FromDict(data: dict[str, Any]) -> "McpServerConfig":
-        """从字典反序列化（兼容 .mcp.json 格式）。"""
-        transportRaw = data.get("type", data.get("transport", "stdio"))
-        transport = EMcpTransport.FromLabel(transportRaw)
-
-        return McpServerConfig(
-            name=data.get("name", ""),
-            transport=transport,
-            command=data.get("command", ""),
-            args=data.get("args", []),
-            url=data.get("url", ""),
-            env=data.get("env", {}),
-            scope=data.get("scope", "local"),
-            enabled=data.get("enabled", True),
-        )
 
     # ---- 工具方法 ----
 

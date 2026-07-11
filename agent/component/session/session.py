@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from agent.component.contex.contextMessage import ContextMessage
 from agent.component.contex.eContextLodLevel import EContextLodLevel
 from common.const import ERole
+from llm.provider.chatMessage import ChatMessage, ToolCall
 
 if TYPE_CHECKING:
     pass
@@ -209,21 +210,56 @@ class Session:
         self.lod3Count -= removedLod3
         return removed
 
-    # ---- 序列化 ----
+    # ---- 持久化 ----
 
     def ToJsonDict(self) -> dict:
         """全量序列化为 JSON 兼容字典，支持完整 Session 持久化与还原。"""
-        return {
-            "sessionId": self.sessionId,
-            "messages": [m.ToJsonDict() for m in self._residentMessages + self._conversationMessages],
-        }
+        messages = []
+        for m in self._residentMessages + self._conversationMessages:
+            cm = m.chatMessage
+            tcs = None
+            if cm.toolCalls:
+                tcs = [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in cm.toolCalls]
+            msgDict = {
+                "messageId": m.messageId,
+                "lodLevel": int(m.lodLevel),
+                "createdAt": m.createdAt,
+                "isAgedOut": m.isAgedOut,
+                "isSummary": m.isSummary,
+                "chatMessage": {
+                    "role": cm.role,
+                    "content": cm.content,
+                    "toolCalls": tcs,
+                    "toolCallId": cm.toolCallId,
+                    "cacheControl": cm.cacheControl,
+                },
+            }
+            messages.append(msgDict)
+        return {"sessionId": self.sessionId, "messages": messages}
 
     @staticmethod
     def FromJsonDict(data: dict) -> "Session":
         """从 JSON 字典还原完整 Session。"""
         session = Session(sessionId=data["sessionId"])
         for mData in data.get("messages", []):
-            msg = ContextMessage.FromJsonDict(mData)
+            cmData = mData["chatMessage"]
+            tcs = None
+            if cmData.get("toolCalls"):
+                tcs = [ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"]) for tc in cmData["toolCalls"]]
+            chatMsg = ChatMessage(
+                role=ERole(cmData["role"]),
+                content=cmData["content"],
+                toolCalls=tcs,
+                toolCallId=cmData.get("toolCallId", ""),
+                cacheControl=cmData.get("cacheControl", False),
+            )
+            msg = ContextMessage(
+                chatMessage=chatMsg,
+                lodLevel=EContextLodLevel(mData["lodLevel"]),
+                messageId=mData["messageId"],
+                isAgedOut=mData.get("isAgedOut", False),
+                isSummary=mData.get("isSummary", False),
+            )
             session.Append(msg)
         return session
 

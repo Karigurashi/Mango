@@ -4,8 +4,8 @@
  */
 
 export const ENodeCategory = {
-  ACTION: 'Action',
-  COMPOSITE: 'Composite',
+  ACTION: 'ACTION',
+  COMPOSITE: 'COMPOSITE',
 };
 
 /** 分类颜色（低饱和度科技风） */

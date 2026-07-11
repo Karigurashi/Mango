@@ -3,7 +3,7 @@
   "nodes": [
     {
       "id": 1,
-      "type": "Action/BeginPlay",
+      "type": "Action/Begin",
       "x": 151,
       "y": 363
     },

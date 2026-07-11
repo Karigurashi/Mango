@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from common.const import ERole
-from llm.provider.chatMessage import ChatMessage, ToolCall
+from llm.provider.chatMessage import ChatMessage
 
 from .eContextLodLevel import EContextLodLevel
 
@@ -115,56 +115,7 @@ class ContextMessage:
             isAgedOut=self.isAgedOut,
         )
 
-    # ---- 转换 ----
-
-    def ToDict(self) -> dict:
-        """转换为模型 API 格式的字典（调试/序列化用）。"""
-        return {"role": self.role, "content": self.content}
-
-    def ToJsonDict(self) -> dict:
-        """全量序列化为 JSON 兼容字典，支持 Session 持久化与还原。"""
-        cm = self._chatMessage
-        tcs = None
-        if cm.toolCalls:
-            tcs = [{"id": tc.id, "name": tc.name, "arguments": tc.arguments} for tc in cm.toolCalls]
-        return {
-            "messageId": self.messageId,
-            "lodLevel": int(self.lodLevel),
-            "createdAt": self.createdAt,
-            "isAgedOut": self.isAgedOut,
-            "isSummary": self.isSummary,
-            "chatMessage": {
-                "role": cm.role,
-                "content": cm.content,
-                "toolCalls": tcs,
-                "toolCallId": cm.toolCallId,
-                "cacheControl": cm.cacheControl,
-            },
-        }
-
-    @staticmethod
-    def FromJsonDict(data: dict) -> "ContextMessage":
-        """从 JSON 字典还原 ContextMessage。"""
-        cmData = data["chatMessage"]
-        tcs = None
-        if cmData.get("toolCalls"):
-            tcs = [ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"]) for tc in cmData["toolCalls"]]
-        chatMsg = ChatMessage(
-            role=ERole(cmData["role"]),
-            content=cmData["content"],
-            toolCalls=tcs,
-            toolCallId=cmData.get("toolCallId", ""),
-            cacheControl=cmData.get("cacheControl", False),
-        )
-        return ContextMessage(
-            chatMessage=chatMsg,
-            lodLevel=EContextLodLevel(data["lodLevel"]),
-            messageId=data["messageId"],
-            isAgedOut=data.get("isAgedOut", False),
-            isSummary=data.get("isSummary", False),
-        )
-
-    def __repr__(self) -> str:
+    # ---- 魔法方法 ----
         summaryHint = ", summary" if self.isSummary else ""
         return (
             f"ContextMessage(id={str(self.messageId)[:8]}..., "

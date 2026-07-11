@@ -17,7 +17,6 @@ from agent.component.mcp.mcpComponent import McpComponent
 from agent.component.rule.ruleComponent import RuleComponent
 from agent.component.session.sessionComponent import SessionComponent
 from agent.component.skill.skillComponent import SkillComponent
-from agent.component.tool.eToolCategory import EToolCategory
 from agent.component.tool.toolComponent import ToolComponent
 from agent.core.baseComponent import IComponent
 from common.const import ERole
@@ -109,11 +108,14 @@ class HarnessComponent(IComponent):
         for mcpTool in mcpTools:
             self._toolComp.RegisterTool(mcpTool)
 
-        # ---- 根据配置控制 Workflow 工具启停 ----
+        # ---- 根据配置控制 Workflow 工具启停（同属 TASK，按工具名） ----
+        from agent.component.tool.task import WORKFLOW_TOOL_NAMES
         if self._dataComp.config.enableWorkflow:
-            self._toolComp.EnableByCategory(EToolCategory.WORKFLOW)
+            for toolName in WORKFLOW_TOOL_NAMES:
+                self._toolComp.Enable(toolName)
         else:
-            self._toolComp.DisableByCategory(EToolCategory.WORKFLOW)
+            for toolName in WORKFLOW_TOOL_NAMES:
+                self._toolComp.Disable(toolName)
 
         # ---- 绑定工具到 LLMComponent ----
         toolSpecs = self._toolComp.GetAllToolSpecs()

@@ -98,10 +98,21 @@ class McpComponent(IComponent):
         """导出为 .mcp.json 兼容的 JSON 字符串。"""
         serversDict: dict[str, dict[str, Any]] = {}
         for name, config in self._servers.items():
-            data = config.ToDict()
-            data.pop("name", None)
-            data.pop("enabled", None)
-            serversDict[name] = data
+            d: dict[str, Any] = {
+                "type": config.transport.ToLabel(),
+                "scope": config.scope,
+            }
+            if config.transport == EMcpTransport.STDIO:
+                if config.command:
+                    d["command"] = config.command
+                if config.args:
+                    d["args"] = config.args
+            elif config.transport in (EMcpTransport.HTTP, EMcpTransport.SSE):
+                if config.url:
+                    d["url"] = config.url
+            if config.env:
+                d["env"] = config.env
+            serversDict[name] = d
         result = {"mcpServers": serversDict}
         return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -124,8 +135,18 @@ class McpComponent(IComponent):
         count = 0
         for name, serverData in serversDict.items():
             if isinstance(serverData, dict):
-                serverData["name"] = name
-                config = McpServerConfig.FromDict(serverData)
+                transportRaw = serverData.get("type", serverData.get("transport", "stdio"))
+                transport = EMcpTransport.FromLabel(transportRaw)
+                config = McpServerConfig(
+                    name=name,
+                    transport=transport,
+                    command=serverData.get("command", ""),
+                    args=serverData.get("args", []),
+                    url=serverData.get("url", ""),
+                    env=serverData.get("env", {}),
+                    scope=serverData.get("scope", "local"),
+                    enabled=serverData.get("enabled", True),
+                )
                 self.Register(config)
                 count += 1
 

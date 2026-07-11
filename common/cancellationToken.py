@@ -95,6 +95,8 @@ class CancellationToken:
         await asyncio.to_thread(HeavyWork, data, token)
     """
 
+    __slots__ = ("_event",)
+
     def __init__(self) -> None:
         self._event = asyncio.Event()
 

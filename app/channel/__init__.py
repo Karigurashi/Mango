@@ -1,0 +1,43 @@
+"""BaseChannel 框架 —— 多群消息路由基类，统一 1 App → N 群 → 1 Agent/群 模式。
+
+各平台适配器（飞书、Discord、VSCode Chat 等）继承 BaseChannel 并实现
+平台 I/O 钩子即可接入 Agent 体系。
+
+Usage::
+
+    class FeishuChannel(BaseChannel):
+        async def OnSendResponseAsync(self, groupId, content, cancellationToken=None):
+            await self._api.SendMessage(groupId, content)
+
+        async def OnStartAsync(self, cancellationToken=None):
+            await self._api.StartWebhook()
+
+    channel = FeishuChannel(ChannelConfig(modelName="deepseek-chat"))
+    await channel.StartAsync()
+
+    # Webhook 收到消息时
+    msg = ChannelMessage(groupId="group_123", userId="user_456", content="你好")
+    await channel.ReceiveMessageAsync(msg)
+"""
+
+from .baseChannel import BaseChannel
+from .builtinCommands import RegisterBuiltinCommands
+from .channelConfig import ChannelConfig
+from .channelMessage import ChannelMessage
+from .command import Command
+from .commandContext import CommandContext
+from .commandRegistry import CommandRegistry
+from .eChannelState import EChannelState
+from .groupContext import GroupContext
+
+__all__ = [
+    "BaseChannel",
+    "ChannelConfig",
+    "ChannelMessage",
+    "Command",
+    "CommandContext",
+    "CommandRegistry",
+    "EChannelState",
+    "GroupContext",
+    "RegisterBuiltinCommands",
+]

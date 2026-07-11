@@ -17,7 +17,7 @@ import { generateNodeId } from '../utils/workflowIO';
 
 const nodeTypes = { workflowNode: WorkflowNode };
 
-/** 前端 EExecutionStatus 枚举，与后端 eExecutionStatus.py 保持一致 */
+/** 前端 EExecutionStatus 枚举，与后端 baseNode.py 的 ENodeStatus 保持一致 */
 export const EExecutionStatus = {
   RUNNING: 'running',
   COMPLETED: 'completed',

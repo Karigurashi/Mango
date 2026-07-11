@@ -20,7 +20,7 @@ def main() -> None:
         modelName = sys.argv[1]
 
     app = CliApp(modelName=modelName)
-    app.Run()
+    app.Start()
 
 
 if __name__ == "__main__":

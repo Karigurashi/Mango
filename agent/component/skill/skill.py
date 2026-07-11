@@ -45,35 +45,6 @@ class Skill:
         self.referenceFiles = referenceFiles or []
         self.sourcePath = sourcePath
 
-    # ---- 序列化 ----
-
-    def ToDict(self) -> dict[str, Any]:
-        """导出为可序列化的字典。"""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "body": self.body,
-            "disableModelInvocation": self.disableModelInvocation,
-            "allowedTools": self.allowedTools,
-            "model": self.model,
-            "referenceFiles": self.referenceFiles,
-            "sourcePath": self.sourcePath,
-        }
-
-    @staticmethod
-    def FromDict(data: dict[str, Any]) -> "Skill":
-        """从字典反序列化。"""
-        return Skill(
-            name=data.get("name", ""),
-            description=data.get("description", ""),
-            body=data.get("body", ""),
-            disableModelInvocation=data.get("disableModelInvocation", False),
-            allowedTools=data.get("allowedTools", []),
-            model=data.get("model", ""),
-            referenceFiles=data.get("referenceFiles", []),
-            sourcePath=data.get("sourcePath", ""),
-        )
-
     # ---- Frontmatter 解析 ----
 
     @staticmethod

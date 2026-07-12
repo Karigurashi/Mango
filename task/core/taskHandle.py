@@ -39,6 +39,10 @@ class TaskHandle(Generic[TTask]):
     def taskId(self) -> int:
         return self.task.info.taskId
 
+    def GetTask(self) -> TTask:
+        """获取此句柄持有的泛型 Task。"""
+        return self.task
+
     def Cancel(self) -> bool:
         """请求取消此任务。"""
         return self.scheduler._CancelHandle(self)
@@ -61,4 +65,3 @@ class TaskHandle(Generic[TTask]):
 
     def __await__(self):
         return self.WaitAsync().__await__()
-

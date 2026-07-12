@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import traceback
@@ -61,6 +62,7 @@ class CliApp(BaseChannel):
         # 创建 CLI 单群（触发 CreateAgent + OnGroupCreated）
         self._cliGroup = self.EnsureGroup(self.CLI_GROUP_ID, "CLI")
 
+        Logger.RedirectToStdout()
         Logger.SetLevel(logging.WARNING)
         self._EnsureUtf8Stdout()
         self._PrintBanner()
@@ -68,10 +70,12 @@ class CliApp(BaseChannel):
 
     # ---- BaseChannel 钩子 ----
 
-    def CreateAgent(self) -> Agent:
-        """override: 创建带 workflow 的 Agent。"""
+    def CreateAgent(self, groupId: str) -> Agent:
+        """override: 创建带 workflow 的 Agent，tasksDir 按 groupId 隔仓。"""
         agentConfig = AgentConfig()
         agentConfig.enableWorkflow = self._config.enableWorkflow
+        agentConfig.enableSchedule = self._config.enableSchedule
+        agentConfig.tasksDir = os.path.join(agentConfig.tasksDir, groupId)
         return AgentManager.CreateAgent(self._config.modelName, agentConfig)
 
     def OnAgentEventSync(self, groupId: str, event: AgentStreamEvent) -> None:

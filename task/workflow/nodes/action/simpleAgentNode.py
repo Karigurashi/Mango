@@ -119,23 +119,23 @@ class SimpleAgentNode(BaseNode):
 
     def _OnAgentStreamEvent(self, event: AgentStreamEvent) -> None:
         """Agent 流式事件回调：累积文本并推送前端。"""
-        from task.workflow.core.eTaskProgressKind import ETaskProgressKind
-        from task.workflow.core.taskProgressData import TaskProgressData
+        from task.workflow.core.workflowEventData import EWorkflowEventType, WorkFlowEventData
+        from task.workflow.core.baseNode import ENodeStatus
 
         ctx = self.context
         if ctx is None:
             return
         if event.eventType == EAgentStreamEventType.TEXT_COMPLETE:
             self._streamFullContent += event.content
-            ctx.PushProgress(TaskProgressData(
-                kind=ETaskProgressKind.AI_CONTENT,
+            ctx.PushProgress(WorkFlowEventData(
+                type=EWorkflowEventType.AI_CONTENT,
                 nodeId=self._streamNodeId,
                 message=event.content,
             ))
         elif event.eventType == EAgentStreamEventType.ERROR:
-            ctx.PushProgress(TaskProgressData(
-                kind=ETaskProgressKind.NODE_STATUS,
+            ctx.PushProgress(WorkFlowEventData(
+                type=EWorkflowEventType.NODE_STATUS,
                 nodeId=self._streamNodeId,
                 message=event.content,
-                status="FAILED",
+                status=ENodeStatus.FAILED,
             ))

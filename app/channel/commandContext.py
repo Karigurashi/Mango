@@ -14,17 +14,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List
 
-from agent import (
-    Agent,
-    DataComponent,
-    HarnessComponent,
-    LLMComponent,
-    SessionComponent,
-    ToolComponent,
-)
-from agent.component.contex.contextComponent import ContextComponent
-
 if TYPE_CHECKING:
+    from agent import (
+        Agent,
+        DataComponent,
+        HarnessComponent,
+        LLMComponent,
+        SessionComponent,
+        ToolComponent,
+    )
+    from agent.component.contex.contextComponent import ContextComponent
     from .baseChannel import BaseChannel
     from .channelMessage import ChannelMessage
     from .commandRegistry import CommandRegistry

@@ -2,14 +2,14 @@ from .core import BaseScheduler
 from .core.task import ETaskStatus, Task, TaskInfo, TaskT
 from .core.taskHandle import TaskHandle
 from .schedule import (
-    ScheduleTask,
+    CronScheduler,
     TaskSpec,
 )
 
 __all__ = [
     "BaseScheduler",
+    "CronScheduler",
     "ETaskStatus",
-    "ScheduleTask",
     "TaskHandle", "TaskInfo",
     "Task", "TaskSpec", "TaskT",
 ]

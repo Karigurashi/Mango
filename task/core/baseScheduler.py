@@ -8,15 +8,14 @@ from typing import TypeVar
 
 from common.cancellationToken import CancellationToken
 from common.logger import Logger
-
-from .task import ETaskStatus, Task, TaskT
+from .task import ETaskStatus, Task
 from .taskHandle import TaskDoneCallback, TaskHandle
 
 TTask = TypeVar("TTask", bound=Task)
 
 
 class BaseScheduler:
-    """调度器基类：只负责 TaskHandle 生命周期和 ExecuteAsync 执行。"""
+    """调度器基类：只负责 TaskHandle 生命周期和协程执行。"""
 
     def _CreateHandle(
         self,
@@ -25,7 +24,6 @@ class BaseScheduler:
     ) -> TaskHandle[TTask]:
         token = CancellationToken()
         task.info.status = ETaskStatus.RUNNING
-        task.info.error = ""
         return TaskHandle(
             task=task,
             scheduler=self,
@@ -59,10 +57,7 @@ class BaseScheduler:
     async def _ExecuteCoreAsync(self, handle: TaskHandle) -> None:
         task = handle.task
         try:
-            result = await task.ExecuteAsync(handle.cancellationToken)
-            if isinstance(task, TaskT):
-                task._result = result
-                task._hasResult = True
+            await task._Execute(handle.cancellationToken)
             if task.info.status == ETaskStatus.RUNNING:
                 task.info.status = ETaskStatus.COMPLETED
         except asyncio.CancelledError:
@@ -71,15 +66,12 @@ class BaseScheduler:
         except Exception as e:
             if task.info.status == ETaskStatus.RUNNING:
                 task.info.status = ETaskStatus.FAILED
-            task.info.error = str(e)
+            Logger.Error(f"Task {task.info.taskId} ({task.info.name}) failed: {e}")
 
     def _NotifyFinished(self, handle: TaskHandle) -> None:
         if handle.onFinished is None:
             return
-        try:
-            handle.onFinished(handle)
-        except Exception:
-            Logger.Error(f"onFinished handler failed for task {handle.task.info.taskId}")
+        handle.onFinished(handle)
         handle.onFinished = None
 
     def _OnHandleCancel(self, handle: TaskHandle) -> None:

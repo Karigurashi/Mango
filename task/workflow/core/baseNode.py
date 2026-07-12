@@ -7,11 +7,14 @@
 handler 方法签名仅需 ``(self, message)``，无需手动传递 ctx。
 """
 
+from __future__ import annotations
+
 import inspect
 from enum import IntEnum
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from .workflowContext import WorkflowContext
+if TYPE_CHECKING:
+    from .workflowContext import WorkflowContext
 
 
 # ---- 枚举: 节点分类 ----

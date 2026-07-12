@@ -14,13 +14,14 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from agent.core.baseComponent import IComponent
-from agent.component.session.sessionComponent import SessionComponent
-from agent.component.data.dataComponent import DataComponent
 from agent.component.data.agentConfig import AgentConfig
-from agent.component.eventBus.eventBusComponent import EventBusComponent
+from agent.component.data.dataComponent import DataComponent
 from agent.component.eventBus.agentStreamEvent import AgentStreamEvent
+from agent.component.eventBus.eventBusComponent import EventBusComponent
+from agent.component.llm.llmComponent import LLMComponent
+from agent.component.session.sessionComponent import SessionComponent
+from agent.component.store.storeComponent import StoreComponent
 from common.const import ERole
-from common.logger import Logger
 from llm.provider.chatMessage import ChatMessage, ToolCall
 
 from .contextCompactor import ContextCompactor
@@ -28,8 +29,7 @@ from .contextMessage import ContextMessage
 from .eContextLodLevel import EContextLodLevel
 
 if TYPE_CHECKING:
-    from agent.component.llm.llmComponent import LLMComponent
-    from agent.component.store.storeComponent import StoreComponent
+    from agent.core.baseAgent import BaseAgent
 
 
 class ContextComponent(IComponent):
@@ -72,16 +72,12 @@ class ContextComponent(IComponent):
         从 Agent 获取 SessionComponent、LLMComponent、StoreComponent、DataComponent，
         使用 AgentConfig 和 StoreComponent 创建 ContextCompactor。
         """
-        from agent.component.llm.llmComponent import LLMComponent
-
         self._sessionComponent = agent.GetComponent(SessionComponent)
         self._llmComponent = agent.GetComponent(LLMComponent)
         self._eventBusComponent = agent.GetComponent(EventBusComponent)
         dataComp = agent.GetComponent(DataComponent)
         self._config = dataComp.config
 
-        # 通过 StoreComponent 获取文件缓存能力
-        from agent.component.store.storeComponent import StoreComponent
         self._storeComp = agent.GetComponent(StoreComponent)
 
         self._compactor = ContextCompactor(

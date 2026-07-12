@@ -11,14 +11,14 @@ from ..toolComponent import ToolComponent
 
 
 @ToolComponent.Register
-class RunWorkflowTool(BaseTool):
+class RunFlowTaskTool(BaseTool):
     """Submit a Workflow JSON for background execution, return taskId immediately.
 
     The workflow runs asynchronously. Use listTasks for status.
     """
 
-    name: str = "runWorkflow"
-    description: str = "Submit workflow JSON for background execution; use listTasks for status."
+    name: str = "runFlowTask"
+    description: str = "Submit workflow JSON for background task"
     category: EToolCategory = EToolCategory.TASK
     timeout: float = 10.0
     parameters: dict = {
@@ -26,7 +26,7 @@ class RunWorkflowTool(BaseTool):
         "properties": {
             "json": {
                 "type": "string",
-                "description": "Workflow JSON per get_workflow_schema",
+                "description": "Workflow JSON per getWorkflowSchema",
             },
         },
         "required": ["json"],
@@ -42,11 +42,11 @@ class RunWorkflowTool(BaseTool):
             ToolResult with taskId and initial status.
         """
         from agent.component.workflow.workflowComponent import WorkflowComponent
-        from task.workflow import WorkflowSerializer
+        from task.workflow import Workflow
 
         workflowComp = self._agent.GetComponent(WorkflowComponent)
         try:
-            wf = WorkflowSerializer.FromJson(json)
+            wf = Workflow.FromJson(json)
             task = workflowComp.AddTask(wf)
         except Exception as exc:
             return ToolResult.Fail(
@@ -55,12 +55,15 @@ class RunWorkflowTool(BaseTool):
             )
 
         result = {
-            "workflowId": task.info.taskId,
+            "taskId": task.info.taskId,
             "status": task.info.status.name,
             "name": task.info.name,
         }
+
+        msg = f"已完成，等待推送。{_json.dumps(result, ensure_ascii=False)}"
+
         return ToolResult.Ok(
-            content=_json.dumps(result, ensure_ascii=False),
+            content=msg,
             data=result,
             toolName=self.name,
         )

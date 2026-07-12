@@ -6,6 +6,8 @@ McpComponent / ToolComponent / DataComponent / SessionComponent，通过 BuildAs
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import os
 import platform
 from datetime import datetime, timezone
@@ -16,11 +18,17 @@ from agent.component.llm.llmComponent import LLMComponent
 from agent.component.mcp.mcpComponent import McpComponent
 from agent.component.rule.ruleComponent import RuleComponent
 from agent.component.session.sessionComponent import SessionComponent
+from agent.component.skill.loadSkillTool import LoadSkillTool
 from agent.component.skill.skillComponent import SkillComponent
 from agent.component.tool.toolComponent import ToolComponent
+from agent.component.tool.task import WORKFLOW_TOOL_NAMES, SCHEDULE_TOOL_NAMES
+from agent.component.schedule.scheduleComponent import ScheduleComponent
 from agent.core.baseComponent import IComponent
 from common.const import ERole
 from llm.provider.chatMessage import ChatMessage
+
+if TYPE_CHECKING:
+    from agent.core.baseAgent import BaseAgent
 
 
 class HarnessComponent(IComponent):
@@ -62,6 +70,7 @@ class HarnessComponent(IComponent):
 
     def OnInitialize(self, agent: BaseAgent) -> None:
         """挂载后初始化，自动注入各依赖 Component。"""
+        self._agent: BaseAgent = agent
         self._dataComp = agent.GetComponent(DataComponent)
         self._sessionComp = agent.GetComponent(SessionComponent)
         self._ruleComp = agent.GetComponent(RuleComponent)
@@ -99,7 +108,6 @@ class HarnessComponent(IComponent):
         )
 
         if self._skillComp.Count() > 0:
-            from agent.component.skill.loadSkillTool import LoadSkillTool
             loadSkillTool = LoadSkillTool(self._skillComp)
             self._toolComp.RegisterTool(loadSkillTool)
 
@@ -109,12 +117,20 @@ class HarnessComponent(IComponent):
             self._toolComp.RegisterTool(mcpTool)
 
         # ---- 根据配置控制 Workflow 工具启停（同属 TASK，按工具名） ----
-        from agent.component.tool.task import WORKFLOW_TOOL_NAMES
         if self._dataComp.config.enableWorkflow:
             for toolName in WORKFLOW_TOOL_NAMES:
                 self._toolComp.Enable(toolName)
         else:
             for toolName in WORKFLOW_TOOL_NAMES:
+                self._toolComp.Disable(toolName)
+
+        # ---- 根据配置控制定时任务工具启停 ----
+        if self._dataComp.config.enableSchedule:
+            self._agent.AddComponent(ScheduleComponent)
+            for toolName in SCHEDULE_TOOL_NAMES:
+                self._toolComp.Enable(toolName)
+        else:
+            for toolName in SCHEDULE_TOOL_NAMES:
                 self._toolComp.Disable(toolName)
 
         # ---- 绑定工具到 LLMComponent ----

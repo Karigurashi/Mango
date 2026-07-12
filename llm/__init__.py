@@ -4,7 +4,6 @@ from .baseLLM import BaseLLM
 from .provider.baseProvider import BaseProvider
 from .llmConfig import LLMConfig, LLMModel
 from .llmRequestParams import LLMRequestParams
-from .llmManager import LLMManager
 from .tokenEstimator import TokenEstimator
 from common.llmError import LLMError
 from .provider.openai import OpenAIProvider, OpenAIProtocol
@@ -24,7 +23,6 @@ __all__ = [
     "LLMConfig",
     "LLMModel",
     "LLMRequestParams",
-    "LLMManager",
     "TokenEstimator",
     "LLMError",
     "OpenAIProvider",

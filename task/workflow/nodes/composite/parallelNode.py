@@ -48,7 +48,7 @@ class ParallelNode(BaseNode):
 
         # 消费所有子节点写入的待发送消息，合并 content
         mergedParts: list[str] = []
-        for msg, _ in self.context.ConsumeMessages():
+        for msg in self.context.ConsumeMessages():
             if msg.message:
                 node = graph.GetNode(msg.nodeId)
                 label = node.name if (node and node.name) else (

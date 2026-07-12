@@ -9,14 +9,14 @@ Graph、EventBus、WorkflowId 等通过 ``self._workflow`` 透传，
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from .workflowMessage import WorkflowMessage
-from .taskProgressData import TaskProgressData
 
 if TYPE_CHECKING:
     from common.cancellationToken import CancellationToken
     from ..workflow import Workflow
+    from .workflowEventData import WorkFlowEventData
     from .workflowGraph import WorkflowGraph
 
 
@@ -35,10 +35,9 @@ class WorkflowContext:
 
     def __init__(self, initialData: dict[str, Any] | None = None) -> None:
         self._data: dict[str, Any] = initialData.copy() if initialData else {}
-        self._pendingMessages: list[tuple[WorkflowMessage, list[int] | None]] = []
+        self._pendingMessages: list[WorkflowMessage] = []
         self._workflow: Optional["Workflow"] = None
         self._cancellationToken: Optional["CancellationToken"] = None
-        self._progressSink: Callable[[TaskProgressData], None] | None = None
         self._currentNodeId: int = 0
         self._executionRound: int = 0
         self._currentDepth: int = 0
@@ -71,16 +70,15 @@ class WorkflowContext:
 
     # ---- 消息传递 ----
 
-    async def SendMessageAsync(self, message: WorkflowMessage, targetIds: list[int] | None = None) -> None:
+    async def SendMessageAsync(self, message: WorkflowMessage) -> None:
         """向下游节点发送消息。
 
         Args:
             message: 要发送的 WorkflowMessage。
-            targetIds: 目标节点 ID 列表（int），None 表示广播到所有下游。
         """
-        self._pendingMessages.append((message, targetIds))
+        self._pendingMessages.append(message)
 
-    def ConsumeMessages(self) -> list[tuple[WorkflowMessage, list[int] | None]]:
+    def ConsumeMessages(self) -> list[WorkflowMessage]:
         """消费所有待发送消息（执行引擎使用）。"""
         messages = self._pendingMessages
         self._pendingMessages = []
@@ -115,15 +113,11 @@ class WorkflowContext:
 
     # ---- 事件推送 ----
 
-    def PushProgress(self, data: TaskProgressData) -> None:
-        """推送进度/流式事件至注入的 sink。"""
-        if self._progressSink is None:
+    def PushProgress(self, data: WorkFlowEventData) -> None:
+        """推送进度/流式事件至 Workflow 的事件总线。"""
+        if self._workflow is None:
             return
-        self._progressSink(data)
-
-    def SetProgressSink(self, sink: Callable[[TaskProgressData], None] | None) -> None:
-        """注入进度事件 sink。"""
-        self._progressSink = sink
+        self._workflow._PushProgress(data)
 
     @property
     def WorkflowId(self) -> int:

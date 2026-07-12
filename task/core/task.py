@@ -1,19 +1,22 @@
-"""Task —— 可执行任务本体。"""
+"""Task —— 可执行任务，包装 async 协程的执行句柄。
+
+Task 不可被继承（对标 C# sealed Task），所有工作以协程工厂注入。
+"""
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING, ClassVar, Generic, Optional, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Generic, Optional, TypeVar, cast
 
 if TYPE_CHECKING:
     from common.cancellationToken import CancellationToken
-    from .taskHandle import TaskDoneCallback
-    from .taskHandle import TaskHandle
 
 TResult = TypeVar("TResult")
-TTask = TypeVar("TTask", bound="Task")
+
+CoroFunc = Callable[["CancellationToken | None"], Coroutine[Any, Any, None]]
+CoroFuncT = Callable[["CancellationToken | None"], Coroutine[Any, Any, "TResult"]]
 
 
 class ETaskStatus(IntEnum):
@@ -33,48 +36,36 @@ class TaskInfo:
     createdAt: float
     name: str = "Unnamed"
     status: ETaskStatus = ETaskStatus.RUNNING
-    error: str = ""
 
 
 class Task:
-    """可执行任务基类。
+    """不可被继承的任务，包装一个 async 协程。
 
-    运行态由 TaskHandle 持有，Task 本身不承载调度器私有字段。
+    Task 本身不包含调度逻辑，由调度器创建并管理生命周期。
     """
 
-    _nextId: ClassVar[int] = 0
-
-    def __init__(self, name: str = "") -> None:
-        Task._nextId += 1
+    def __init__(self, coro: CoroFunc, taskId: int, name: str = "") -> None:
+        self._coro: CoroFunc = coro
         self._info: TaskInfo = TaskInfo(
-            taskId=Task._nextId,
+            taskId=taskId,
             createdAt=time.time(),
             name=name or "Unnamed",
         )
 
     @property
     def info(self) -> TaskInfo:
-        """只读 TaskInfo 引用，供序列化 / 日志等场景。"""
         return self._info
 
-    async def ExecuteAsync(self, cancellationToken: Optional["CancellationToken"] = None) -> None:
-        """执行任务核心逻辑，子类 override。"""
-        raise NotImplementedError
-
-    def RunAsync(self: TTask, onFinished: Optional["TaskDoneCallback"] = None) -> "TaskHandle[TTask]":
-        """使用内部共享调度器调度当前任务。"""
-        from .taskScheduler import _DEFAULT_TASK_SCHEDULER
-        return _DEFAULT_TASK_SCHEDULER.Schedule(self, onFinished=onFinished)
-
-    def __await__(self):
-        return self.RunAsync().WaitAsync().__await__()
+    async def _Execute(self, cancellationToken: Optional["CancellationToken"] = None) -> None:
+        """内部执行入口，由调度器调用。"""
+        await self._coro(cancellationToken)
 
 
 class TaskT(Task, Generic[TResult]):
-    """类似 C# Task<T> 的带结果任务基类。"""
+    """类似 C# Task<T> 的带结果任务，不可被继承。"""
 
-    def __init__(self, name: str = "") -> None:
-        super().__init__(name=name)
+    def __init__(self, coro: CoroFuncT, taskId: int, name: str = "") -> None:
+        super().__init__(coro, taskId=taskId, name=name)
         self._hasResult: bool = False
         self._result: TResult | None = None
 
@@ -84,6 +75,6 @@ class TaskT(Task, Generic[TResult]):
             raise RuntimeError(f"Task {self.info.taskId} has not produced a result")
         return cast(TResult, self._result)
 
-    async def ExecuteAsync(self, cancellationToken: Optional["CancellationToken"] = None) -> TResult:
-        """执行任务核心逻辑，子类 override 并返回结果。"""
-        raise NotImplementedError
+    async def _Execute(self, cancellationToken: Optional["CancellationToken"] = None) -> None:
+        self._result = await cast(CoroFuncT, self._coro)(cancellationToken)
+        self._hasResult = True

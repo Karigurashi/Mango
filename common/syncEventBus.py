@@ -30,8 +30,11 @@ class SyncEventBus(Generic[TEvent]):
         self._listeners.append(callback)
 
     def RemoveListener(self, callback: Callable[[TEvent], None]) -> None:
-        """移除事件监听器。"""
-        self._listeners.remove(callback)
+        """移除事件监听器，若不存在则静默忽略。"""
+        try:
+            self._listeners.remove(callback)
+        except ValueError:
+            pass
 
     def Push(self, event: TEvent) -> None:
         """同步推送事件给所有监听器。

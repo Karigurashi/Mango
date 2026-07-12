@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from agent.component.tool.eToolCategory import EToolCategory
-from llm import LLMManager
 
 from .command import Command
 from .commandContext import CommandContext
@@ -67,6 +66,8 @@ async def _ModelAsync(ctx: CommandContext, args: str) -> None:
     /model            → 列表
     /model <name>     → 切换
     """
+    from llm import LLMManager
+
     modelName = args.strip()
     if not modelName:
         _PrintModelList(ctx)
@@ -88,6 +89,8 @@ async def _ModelAsync(ctx: CommandContext, args: str) -> None:
 
 def _PrintModelList(ctx: CommandContext) -> None:
     """打印可用模型列表，标记当前模型。"""
+    from llm import LLMManager
+
     current = ctx.LLM.modelName
     models = LLMManager.ListModels()
     ctx.PrintDim("Available Models:")

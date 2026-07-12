@@ -13,6 +13,29 @@ import logging
 import sys
 
 
+# ---- ANSI 颜色 ----
+
+_RESET = "\033[0m"
+_RED = "\033[31m"
+_YELLOW = "\033[33m"
+
+_LEVEL_COLORS = {
+    logging.ERROR: _RED,
+    logging.WARNING: _YELLOW,
+}
+
+
+class _ColoredFormatter(logging.Formatter):
+    """按日志级别染色：ERROR 红色，WARNING 黄色。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        line = super().format(record)
+        color = _LEVEL_COLORS.get(record.levelno)
+        if color is None:
+            return line
+        return f"{color}{line}{_RESET}"
+
+
 class Logger:
     """全局日志静态类，封装 logging.Logger。"""
 
@@ -27,7 +50,7 @@ class Logger:
         if not cls._instance.handlers:
             handler = logging.StreamHandler(sys.stderr)
             handler.setLevel(logging.DEBUG)
-            fmt = logging.Formatter(
+            fmt = _ColoredFormatter(
                 "[%(asctime)s] [%(levelname)-5s] [%(name)s] %(message)s",
                 datefmt="%H:%M:%S",
             )
@@ -62,6 +85,14 @@ class Logger:
     def SetLevel(cls, level: int) -> None:
         cls._EnsureLoaded()
         cls._instance.setLevel(level)
+
+    @classmethod
+    def RedirectToStdout(cls) -> None:
+        """CLI 单窗口模式：将日志输出从 stderr 重定向到 stdout。"""
+        cls._EnsureLoaded()
+        for handler in cls._instance.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.stream = sys.stdout
 
     @classmethod
     def GetLogger(cls) -> logging.Logger:

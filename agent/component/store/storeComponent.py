@@ -53,7 +53,7 @@ class StoreComponent(IComponent):
 
         config = agent.GetComponent(DataComponent).config
         if config.enablePersist:
-            self._storeDir = config.storeDir
+            self._storeDir = os.path.abspath(config.storeDir)
             self._maxTotalSize = config.storeMaxTotalSize
             self._maxFileCount = config.storeMaxFileCount
 
@@ -91,7 +91,7 @@ class StoreComponent(IComponent):
                 os.unlink(tmpPath)
             raise
 
-        return filepath
+        return os.path.abspath(filepath)
 
     def Load(self, path: str, refreshAccess: bool = True) -> str | None:
         """按路径加载外存内容。

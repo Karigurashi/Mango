@@ -36,11 +36,11 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import os
+import re
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-from agent import Agent, AgentConfig, AgentManager, AgentStreamEvent
 from common.cancellationToken import CancellationToken
-from setting import Settings
 from common.logger import Logger
 
 from .channelConfig import ChannelConfig
@@ -48,6 +48,9 @@ from .channelMessage import ChannelMessage
 from .builtinCommands import RegisterBuiltinCommands
 from .command import Command
 from .commandContext import CommandContext
+
+if TYPE_CHECKING:
+    from agent import Agent, AgentConfig, AgentManager, AgentStreamEvent
 from .commandRegistry import CommandRegistry
 from .eChannelState import EChannelState
 from .groupContext import GroupContext
@@ -334,7 +337,7 @@ class BaseChannel:
                 f"({self._config.maxConcurrentGroups})"
             )
 
-        agent = self.CreateAgent()
+        agent = self.CreateAgent(groupId)
         group = GroupContext(self, groupId, groupName, agent)
         self._groups[groupId] = group
         self.OnGroupCreated(groupId, group)
@@ -425,18 +428,38 @@ class BaseChannel:
 
     # ---- Agent 工厂 ----
 
-    def CreateAgent(self) -> Agent:
+    def CreateAgent(self, groupId: str) -> Agent:
         """为新建群组创建 Agent 实例。
 
         子类可 override 此方法自定义 Agent 配置（如不同系统提示词、
         工具集）。默认使用 ChannelConfig 中的模型名和配置创建标准
-        ReAct Agent。
+        ReAct Agent，tasksDir 拼接 groupId 实现隔仓。
+
+        Args:
+            groupId: 群组唯一标识，用于拼接 tasksDir 子目录。
 
         Returns:
             已初始化的 Agent 实例。
         """
         agentConfig = self._config.agentConfig
         if agentConfig is None:
+            from setting import Settings
             agentConfig = Settings.AgentConfig()
             agentConfig.enableWorkflow = self._config.enableWorkflow
+            agentConfig.enableSchedule = self._config.enableSchedule
+        agentConfig.tasksDir = os.path.join(agentConfig.tasksDir, _SanitizeGroupId(groupId))
+        from agent import AgentManager
         return AgentManager.CreateAgent(self._config.modelName, agentConfig)
+
+
+_SANITIZE_RE = re.compile(r'[^a-zA-Z0-9\-_.]')
+
+
+def _SanitizeGroupId(groupId: str) -> str:
+    """将 groupId 转为安全的文件系统目录名。
+
+    仅保留字母、数字、连字符、下画线和点号，
+    非法字符替换为 '_'，截断至 64 字符。
+    """
+    safe = _SANITIZE_RE.sub('_', groupId).strip(' _.-') or 'default'
+    return safe[:64]

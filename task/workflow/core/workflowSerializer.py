@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any, TYPE_CHECKING
 
-from .core.nodeRegistry import NodeRegistry
-from .core.workflowEdge import WorkflowEdge, EEdgeType
+from .nodeRegistry import NodeRegistry
+from .workflowEdge import WorkflowEdge, EEdgeType
 
 if TYPE_CHECKING:
-    from .workflow import Workflow
+    from ..workflow import Workflow
 
 
 class WorkflowSerializer:
@@ -34,7 +34,7 @@ class WorkflowSerializer:
                 "edges": [{"from": 1, "to": 2}],
             })
         """
-        from .workflow import Workflow
+        from ..workflow import Workflow
 
         wf = Workflow(name=data.get("name", ""))
         for nodeData in data.get("nodes", []):
@@ -81,7 +81,7 @@ class WorkflowSerializer:
         Returns:
             包含 name、nodes、edges 的字典。
         """
-        result: dict[str, Any] = {"name": wf.info.name}
+        result: dict[str, Any] = {"name": wf.name}
         nodesData: list[dict] = []
         for nid in wf.graph.GetAllNodeIds():
             node = wf.graph.GetNode(nid)

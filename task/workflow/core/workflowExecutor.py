@@ -9,17 +9,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from .workflowContext import WorkflowContext
 from .workflowMessage import WorkflowMessage
+from .baseNode import ENodeStatus
 from common.cancellationToken import CancellationToken
-from .eTaskProgressKind import ETaskProgressKind
-from .taskProgressData import TaskProgressData
+from .workflowEventData import EWorkflowEventType, WorkFlowEventData
 
 if TYPE_CHECKING:
     from .baseNode import BaseNode
-    from .workflow import Workflow
+    from ..workflow import Workflow
 
 MAX_EXECUTION_DEPTH = 5000
 
@@ -29,7 +29,7 @@ class WorkflowExecutor:
 
     用法::
 
-        wf = WorkflowSerializer.FromDict(jsonData)
+        wf = Workflow.FromDict(jsonData)
         ctx = WorkflowContext()
         await WorkflowExecutor.ExecuteAsync(wf, ctx)
     """
@@ -41,7 +41,6 @@ class WorkflowExecutor:
         workflow: "Workflow",
         ctx: WorkflowContext,
         cancellationToken: CancellationToken,
-        progressSink: Callable[[TaskProgressData], None] | None = None,
     ) -> WorkflowContext:
         """异步执行工作流，从入口节点开始消息驱动遍历。
 
@@ -56,10 +55,9 @@ class WorkflowExecutor:
         """
         ctx.SetCancellationToken(cancellationToken)
         ctx.SetWorkflow(workflow)
-        ctx.SetProgressSink(progressSink)
 
         # 通知：事件流开始
-        ctx.PushProgress(TaskProgressData(kind=ETaskProgressKind.FLOW_START))
+        ctx.PushProgress(WorkFlowEventData(type=EWorkflowEventType.FLOW_START))
 
         # 查找入口节点
         entryNodes = ctx.Graph.GetEntryNodes()
@@ -79,21 +77,19 @@ class WorkflowExecutor:
             finalMessages = ctx.ConsumeMessages()
             text = ""
             if finalMessages:
-                text = finalMessages[-1][0].message
-            ctx.PushProgress(TaskProgressData(
-                kind=ETaskProgressKind.FLOW_DONE,
+                text = finalMessages[-1].message
+            ctx.PushProgress(WorkFlowEventData(
+                type=EWorkflowEventType.FLOW_DONE,
                 message=text,
             ))
             return ctx
         except asyncio.CancelledError:
             # 任务被取消时：Cancel Token → 底层 LLM 连接关闭 → 推送 FLOW_CANCEL
             cancellationToken.Cancel()
-            ctx.PushProgress(TaskProgressData(kind=ETaskProgressKind.FLOW_CANCEL))
+            ctx.PushProgress(WorkFlowEventData(type=EWorkflowEventType.FLOW_CANCEL))
             raise
         except Exception:
             raise
-        finally:
-            ctx.SetProgressSink(None)
 
     # ---- 内部执行逻辑 ----
 
@@ -121,10 +117,10 @@ class WorkflowExecutor:
 
         # 0. 检查取消令牌（节点执行前）
         if ctx.CancellationToken and ctx.CancellationToken.IsCancellationRequested:
-            ctx.PushProgress(TaskProgressData(
-                kind=ETaskProgressKind.NODE_STATUS,
+            ctx.PushProgress(WorkFlowEventData(
+                type=EWorkflowEventType.NODE_STATUS,
                 nodeId=nodeId,
-                status="CANCELLED",
+                status=ENodeStatus.CANCELLED,
             ))
             return
 
@@ -145,20 +141,20 @@ class WorkflowExecutor:
             )
 
         # 2. 通知：节点开始执行
-        ctx.PushProgress(TaskProgressData(
-            kind=ETaskProgressKind.NODE_STATUS,
+        ctx.PushProgress(WorkFlowEventData(
+            type=EWorkflowEventType.NODE_STATUS,
             nodeId=nodeId,
-            status="RUNNING",
+                status=ENodeStatus.RUNNING,
         ))
 
         try:
             executor.context = ctx
             await handlerFn(executor, message)
             # 通知：节点执行完成
-            ctx.PushProgress(TaskProgressData(
-                kind=ETaskProgressKind.NODE_STATUS,
+            ctx.PushProgress(WorkFlowEventData(
+                type=EWorkflowEventType.NODE_STATUS,
                 nodeId=nodeId,
-                status="COMPLETED",
+                status=ENodeStatus.COMPLETED,
             ))
         finally:
             ctx._EndNodeExecution()
@@ -166,9 +162,9 @@ class WorkflowExecutor:
         # 4. 消费 ctx 中的待发送消息，路由到下游
         if consumeMessages:
             pendingMessages = ctx.ConsumeMessages()
-            for msg, targetIds in pendingMessages:
-                if targetIds:
-                    targets = targetIds
+            for msg in pendingMessages:
+                if msg.targetIds:
+                    targets = msg.targetIds
                 else:
                     # 默认路由：所有 OUT 类型下游边指向的节点
                     targets = [e.toNodeId for e in ctx.Graph.GetOutEdgesFrom(nodeId)]
@@ -181,7 +177,7 @@ class WorkflowExecutor:
                     await asyncio.gather(*tasks)
                 else:
                     # 叶子节点消息，无下游路由 → 放回队列，由 finally 统一收集
-                    ctx._pendingMessages.append((msg, targetIds))
+                    ctx._pendingMessages.append(msg)
 
     @staticmethod
     def _ResolveHandler(executor: "BaseNode", message: Any) -> callable | None:

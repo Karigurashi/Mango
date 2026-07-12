@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from agent import AgentConfig
+if TYPE_CHECKING:
+    from agent import AgentConfig
 
 
 @dataclass
@@ -23,5 +24,6 @@ class ChannelConfig:
     modelName: Optional[str] = None
     agentConfig: Optional[AgentConfig] = None
     enableWorkflow: bool = True
+    enableSchedule: bool = True
     maxConcurrentGroups: int = 0
     commandPrefix: str = "/"

@@ -13,18 +13,8 @@ from typing import Optional
 from common.const import ERole
 from common.cancellationToken import CancellationToken
 
-from agent.component.contex.contextComponent import ContextComponent
 from agent.component.contex.eContextLodLevel import EContextLodLevel
-from agent.component.session.sessionComponent import SessionComponent
-from agent.component.harness.harnessComponent import HarnessComponent
-from agent.component.llm.llmComponent import LLMComponent
-from agent.component.rule.ruleComponent import RuleComponent
-from agent.component.skill.skillComponent import SkillComponent
-from agent.component.mcp.mcpComponent import McpComponent
-from agent.component.tool.toolComponent import ToolComponent
 from agent.component.tool.toolResult import ToolResult
-
-from agent.component.eventBus.eventBusComponent import EventBusComponent
 
 from agent.component.data.agentConfig import AgentConfig
 from agent.component.data.dataComponent import DataComponent
@@ -32,6 +22,15 @@ from agent.component.data.eAgentState import EAgentState
 
 from .core.baseAgent import BaseAgent
 from .component.eventBus.agentStreamEvent import AgentStreamEvent
+from .component.eventBus.eventBusComponent import EventBusComponent
+from .component.llm.llmComponent import LLMComponent
+from .component.session.sessionComponent import SessionComponent
+from .component.contex.contextComponent import ContextComponent
+from .component.rule.ruleComponent import RuleComponent
+from .component.skill.skillComponent import SkillComponent
+from .component.mcp.mcpComponent import McpComponent
+from .component.tool.toolComponent import ToolComponent
+from .component.harness.harnessComponent import HarnessComponent
 
 from llm.baseLLM import BaseLLM
 from llm.provider.chatMessage import ToolCall
@@ -110,10 +109,6 @@ class Agent(BaseAgent):
         if self._runLock is None:
             self._runLock = asyncio.Lock()
         async with self._runLock:
-            # 事件循环已就绪：恢复定时任务并挂上 Cron
-            from agent.component.schedule.scheduleComponent import ScheduleComponent
-            self.GetComponent(ScheduleComponent)
-
             normalExit = False
             try:
                 await self._RunReActCoreAsync(userMessage, cancellationToken, stream=stream)

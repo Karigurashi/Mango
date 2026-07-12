@@ -18,11 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from llm import LLMManager
+from llm.llmManager import LLMManager
 from common.cancellationToken import CancellationToken
 from llm.provider.chatMessage import ChatMessage
 from llm.llmRequestParams import LLMRequestParams
-from task.workflow import Workflow, WorkflowContext, WorkflowSerializer
+from task.workflow import Workflow, WorkflowContext
 from task.workflow.core.workflowExecutor import WorkflowExecutor
 from task.workflow.core.nodeRegistry import NodeRegistry
 from task.workflow.core.eTaskProgressKind import ETaskProgressKind
@@ -242,7 +242,7 @@ async def run_workflow_stream(req: RunRequest):
             try:
                 addLog("info", f"工作流 '{wfJson['name']}' 开始执行 — {len(req.nodes)} 个节点, {len(edgeData)} 条连线")
 
-                wf = WorkflowSerializer.FromDict(wfJson)
+                wf = Workflow.FromDict(wfJson)
 
                 entryNodes = wf.graph.GetEntryNodes()
                 addLog("info", f"入口节点: {entryNodes if entryNodes else '无'}")
@@ -339,7 +339,7 @@ async def run_workflow(req: RunRequest):
         addLog("info", f"工作流 '{wfJson['name']}' 开始执行 — {len(req.nodes)} 个节点, {len(edgeData)} 条连线")
 
         # 创建工作流并执行
-        wf = WorkflowSerializer.FromDict(wfJson)
+        wf = Workflow.FromDict(wfJson)
 
         entryNodes = wf.graph.GetEntryNodes()
         addLog("info", f"入口节点: {entryNodes if entryNodes else '无'}")

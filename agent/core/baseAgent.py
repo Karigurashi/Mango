@@ -11,19 +11,35 @@
 
 from __future__ import annotations
 
+import abc
 from typing import Dict, List, Optional, Type, TypeVar
 
+from common.cancellationToken import CancellationToken
 from .baseComponent import IComponent
 
 T = TypeVar("T", bound=IComponent)
 
 
-class BaseAgent:
+class BaseAgent(abc.ABC):
     """Agent 体系基类 —— 通过组合模式持有各 Component 实例。"""
 
     def __init__(self) -> None:
         self._components: Dict[Type[IComponent], IComponent] = {}
         self._initializedComponents: set[Type[IComponent]] = set()
+
+    @abc.abstractmethod
+    async def RunStreamAsync(
+        self,
+        userMessage: str,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> None:
+        """异步流式执行 Agent 主循环，事件通过 EventBusComponent 推送。
+        
+        Args:
+            userMessage: 用户/外部注入的消息文本。
+            cancellationToken: 可选取消令牌。
+        """
+        ...
 
     # ---- Component 管理 ----
 
@@ -97,5 +113,3 @@ class BaseAgent:
             component.OnDestroy()
         self._components.clear()
         self._initializedComponents.clear()
-
-

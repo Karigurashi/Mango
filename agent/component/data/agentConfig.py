@@ -98,6 +98,7 @@ class AgentConfig:
     
     # -- 子系统开关 --
     enableWorkflow: bool = False            # 是否启用 Workflow 子系统（开启后注入 run_workflow 等编排工具）
+    enableSchedule: bool = False            # 是否启用定时任务子系统（开启后注入 createTask / deleteTask 工具）
 
     # -- 外部密钥 --
     tavilyApiKey: str = ""  # Tavily Search API 密钥

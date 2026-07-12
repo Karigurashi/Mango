@@ -188,7 +188,7 @@ class ContextCompactor:
         if msg.isAgedOut:
             return
         currentContent = msg.content
-        if self._storeComp is not None and currentContent:
+        if self._storeComp is not None and currentContent and len(currentContent) > 100:
             storePath = self._storeComp.Store(currentContent)
             msg.content = f"[aged in {storePath}]"
         else:

@@ -10,11 +10,9 @@
 """
 
 from .workflow import Workflow
-from .workflowSerializer import WorkflowSerializer
+from .workflowResult import WorkflowResult
 from .core.baseNode import BaseNode, ENodeCategory, handler
 from .core.workflowContext import WorkflowContext
-from .core.eTaskProgressKind import ETaskProgressKind
-from .core.taskProgressData import TaskProgressData
 from .core.workflowEdge import WorkflowEdge, EEdgeType
 from .core.workflowGraph import WorkflowGraph
 from .core.workflowExecutor import WorkflowExecutor
@@ -27,12 +25,10 @@ from .nodes import composite as _composite_nodes
 
 __all__ = [
     "Workflow",
-    "WorkflowSerializer",
+    "WorkflowResult",
     "BaseNode",
     "handler",
     "WorkflowContext",
-    "ETaskProgressKind",
-    "TaskProgressData",
     "WorkflowEdge",
     "EEdgeType",
     "WorkflowGraph",

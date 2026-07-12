@@ -1,25 +1,30 @@
 """Task 工具 —— 定时任务与 Workflow（均为 Task 子系统）。"""
 
-from .createTaskTool import CreateTaskTool
+from .createScheduleTaskTool import CreateScheduleTaskTool
 from .deleteTaskTool import DeleteTaskTool
-from .runWorkflowTool import RunWorkflowTool
+from .runFlowTaskTool import RunFlowTaskTool
 from .getWorkflowSchemaTool import GetWorkflowSchemaTool
 from .listTasksTool import ListTasksTool
-from .cancelWorkflowTool import CancelWorkflowTool
 
 # enableWorkflow 开关控制的工具名（同属 TASK 分类，需按名启停）
 WORKFLOW_TOOL_NAMES: tuple[str, ...] = (
-    "runWorkflow",
-    "cancelWorkflow",
+    "runFlowTask",
+    "deleteTask",
     "getWorkflowSchema",
 )
 
+# enableSchedule 开关控制的工具名
+SCHEDULE_TOOL_NAMES: tuple[str, ...] = (
+    "createScheduleTask",
+    "deleteTask",
+)
+
 __all__ = [
-    "CreateTaskTool",
+    "CreateScheduleTaskTool",
     "DeleteTaskTool",
-    "RunWorkflowTool",
+    "RunFlowTaskTool",
     "GetWorkflowSchemaTool",
     "ListTasksTool",
-    "CancelWorkflowTool",
     "WORKFLOW_TOOL_NAMES",
+    "SCHEDULE_TOOL_NAMES",
 ]

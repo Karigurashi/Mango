@@ -17,35 +17,34 @@ from task.workflow.core.workflowEdge import EEdgeType
 from task.workflow.nodes.action import BeginNode, SimpleAgentNode
 from task.workflow.nodes.composite import ParallelNode
 
-from task.workflow.core.eTaskProgressKind import ETaskProgressKind
-from task.workflow.core.taskProgressData import TaskProgressData
+from task.workflow.core.workflowEventData import EWorkflowEventType, WorkFlowEventData
 
 
 AGENT_NAMES = ["报数员A", "报数员B", "报数员C", "报数员D"]
 
 
-def _OnEvent(data: TaskProgressData) -> None:
+def _OnEvent(data: WorkFlowEventData) -> None:
     """Workflow 进度监听器：打印所有事件并验证 FLOW_DONE 汇总。"""
     wfId = 0
-    kind = data.kind
+    kind = data.type
 
-    if kind == ETaskProgressKind.FLOW_START:
+    if kind == EWorkflowEventType.FLOW_START:
         print(f"[WF{wfId}] === FLOW_START ===")
 
-    elif kind == ETaskProgressKind.FLOW_DONE:
+    elif kind == EWorkflowEventType.FLOW_DONE:
         print(f"\n[WF{wfId}] === FLOW_DONE ===")
         if data.message:
             print(f"[WF{wfId}] [汇总消息]:\n{data.message}")
         else:
             print(f"[WF{wfId}] [WARNING] FLOW_DONE 消息为空！")
 
-    elif kind == ETaskProgressKind.FLOW_CANCEL:
+    elif kind == EWorkflowEventType.FLOW_CANCEL:
         print(f"[WF{wfId}] === FLOW_CANCEL ===")
 
-    elif kind == ETaskProgressKind.NODE_STATUS:
+    elif kind == EWorkflowEventType.NODE_STATUS:
         print(f"[WF{wfId}] [节点{data.nodeId}] {data.status or 'UNKNOWN'}")
 
-    elif kind == ETaskProgressKind.AI_CONTENT:
+    elif kind == EWorkflowEventType.AI_CONTENT:
         print(f"[WF{wfId}] [AI 内容]:\n{data.message}")
 
 
@@ -82,11 +81,11 @@ async def main():
     for i in range(4):
         wf.graph.AddEdge(2, 3 + i, EEdgeType.CHILD)
 
-    # Workflow 本身可等待，内部使用共享调度器执行
+    # Workflow 通过 ExecuteAsync 直接执行
     print("=" * 40)
-    await wf
+    summary = await wf.ExecuteAsync()
     print("=" * 40)
-    print(f"\n[OK] 工作流状态: {wf.info.status.name}, 摘要: {wf.summary}")
+    print(f"\n[OK] 工作流摘要: {summary}")
 
 
 if __name__ == "__main__":

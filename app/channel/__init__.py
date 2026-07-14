@@ -21,23 +21,30 @@ Usage::
 """
 
 from .baseChannel import BaseChannel
-from .builtinCommands import RegisterBuiltinCommands
+from .channelComponent import IChannelComponent
 from .channelConfig import ChannelConfig
 from .channelMessage import ChannelMessage
-from .command import Command
-from .commandContext import CommandContext
-from .commandRegistry import CommandRegistry
+from .component.command import (
+    Command,
+    CommandComponent,
+    CommandContext,
+    CommandRegistry,
+    RegisterBuiltinCommands,
+)
+from .component.group import GroupComponent, GroupContext
 from .eChannelState import EChannelState
-from .groupContext import GroupContext
 
 __all__ = [
     "BaseChannel",
     "ChannelConfig",
     "ChannelMessage",
     "Command",
+    "CommandComponent",
     "CommandContext",
     "CommandRegistry",
     "EChannelState",
+    "GroupComponent",
     "GroupContext",
+    "IChannelComponent",
     "RegisterBuiltinCommands",
 ]

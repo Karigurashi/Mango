@@ -1,12 +1,10 @@
 """Channel 内置指令 —— 所有平台通用的 12 个指令。
 
 由 BaseChannel.__init__ 自动注册到 CommandRegistry，各平台 Channel 无需手动注册。
-指令 handler 仅依赖 CommandContext API，不感知任何平台特定逻辑。
+指令 handler 仅依赖 CommandContext 服务化 API，不感知 Agent 或其组件。
 """
 
 from __future__ import annotations
-
-from agent.component.tool.eToolCategory import EToolCategory
 
 from .command import Command
 from .commandContext import CommandContext
@@ -41,7 +39,7 @@ async def _HelpAsync(ctx: CommandContext, args: str) -> None:
 
 async def _ClearAsync(ctx: CommandContext, args: str) -> None:
     """创建新会话，清空对话历史。"""
-    newId = ctx.Session.NewSession()
+    newId = ctx.NewSession()
     ctx.Print(f"Conversation cleared. New session: #{newId}")
     ctx.PrintDim("System rules and skills are preserved.")
 
@@ -51,7 +49,7 @@ async def _ClearAsync(ctx: CommandContext, args: str) -> None:
 async def _CompactAsync(ctx: CommandContext, args: str) -> None:
     """手动触发上下文压缩。"""
     ctx.PrintDim("Compacting context...")
-    tokenSaved = await ctx.Context.CompactAsync(force=True)
+    tokenSaved = await ctx.CompactContextAsync(force=True)
     if tokenSaved > 0:
         ctx.Print(f"Compaction freed {tokenSaved} tokens.")
     else:
@@ -73,25 +71,20 @@ async def _ModelAsync(ctx: CommandContext, args: str) -> None:
         _PrintModelList(ctx)
         return
 
-    try:
+    if ctx.SwitchModel(modelName):
         newLlm = LLMManager.GetProvider(modelName)
-    except KeyError:
+        ctx.Print(f"Switched to {modelName} ({newLlm.modelName})")
+    else:
         ctx.PrintError(
             f"Unknown model: {modelName}. Available: {', '.join(LLMManager.ListModels())}"
         )
-        return
-
-    dataComp = ctx.Data
-    dataComp.llm = newLlm
-    ctx.LLM.llm = newLlm
-    ctx.Print(f"Switched to {modelName} ({newLlm.modelName})")
 
 
 def _PrintModelList(ctx: CommandContext) -> None:
     """打印可用模型列表，标记当前模型。"""
     from llm import LLMManager
 
-    current = ctx.LLM.modelName
+    current = ctx.GetModelName()
     models = LLMManager.ListModels()
     ctx.PrintDim("Available Models:")
     for name in models:
@@ -105,40 +98,35 @@ def _PrintModelList(ctx: CommandContext) -> None:
 
 async def _CostAsync(ctx: CommandContext, args: str) -> None:
     """显示 Token 用量统计。"""
-    llm = ctx.LLM
     ctx.Print("Token Usage:")
-    ctx.PrintDim(f"  Input:      {ctx.FormatK(llm.TotalPromptTokens)}")
-    ctx.PrintDim(f"  Output:     {ctx.FormatK(llm.TotalCompletionTokens)}")
-    ctx.PrintDim(f"  Total:      {ctx.FormatK(llm.TotalPromptTokens + llm.TotalCompletionTokens)}")
-    ctx.PrintDim(f"  Cache Hit:  {llm.LastCacheHitRate:.1f}%")
+    ctx.PrintDim(f"  Input:      {ctx.FormatK(ctx.GetTotalPromptTokens())}")
+    ctx.PrintDim(f"  Output:     {ctx.FormatK(ctx.GetTotalCompletionTokens())}")
+    ctx.PrintDim(f"  Total:      {ctx.FormatK(ctx.GetTotalPromptTokens() + ctx.GetTotalCompletionTokens())}")
+    ctx.PrintDim(f"  Cache Hit:  {ctx.GetLastCacheHitRate():.1f}%")
 
 
 # ==================== /status ====================
 
 async def _StatusAsync(ctx: CommandContext, args: str) -> None:
     """显示 Agent 运行时状态。"""
-    session = ctx.Session
-    llm = ctx.LLM
-
     ctx.Print("Agent Status:")
-    ctx.PrintDim(f"  State:        {ctx.Data.state.name}")
-    ctx.PrintDim(f"  Model:        {llm.modelName} ({llm.providerName})")
-    ctx.PrintDim(f"  Session:      #{session.ActiveSessionId} ({session.GetMessageCount()} messages)")
-    ctx.PrintDim(f"  Est. Tokens:  {ctx.FormatK(llm.LastPromptTokens)}")
-    ctx.PrintDim(f"  Tools:        {ctx.Tools.Count()} registered")
+    ctx.PrintDim(f"  State:        {ctx.GetAgentState()}")
+    ctx.PrintDim(f"  Model:        {ctx.GetModelName()} ({ctx.GetProviderName()})")
+    ctx.PrintDim(f"  Session:      #{ctx.GetActiveSessionId()} ({ctx.GetSessionMessageCount(ctx.GetActiveSessionId())} messages)")
+    ctx.PrintDim(f"  Est. Tokens:  {ctx.FormatK(ctx.GetLastPromptTokens())}")
+    ctx.PrintDim(f"  Tools:        {ctx.GetToolCount()} registered")
 
 
 # ==================== /sessions ====================
 
 async def _SessionsAsync(ctx: CommandContext, args: str) -> None:
     """列出所有会话，标记活跃。"""
-    activeId = ctx.Session.ActiveSessionId
-    ids = ctx.Session.GetSessionIds()
+    activeId = ctx.GetActiveSessionId()
+    ids = ctx.GetSessionIds()
     ctx.PrintDim(f"Sessions ({len(ids)}):")
     for sid in sorted(ids):
         marker = "*" if sid == activeId else " "
-        session = ctx.Session.GetSession(sid)
-        count = session.GetMessageCount() if session else 0
+        count = ctx.GetSessionMessageCount(sid)
         ctx.PrintDim(f" {marker} #{sid} ({count} messages)")
     ctx.PrintDim("Use /session to save current session.")
 
@@ -147,7 +135,7 @@ async def _SessionsAsync(ctx: CommandContext, args: str) -> None:
 
 async def _SessionAsync(ctx: CommandContext, args: str) -> None:
     """将当前 session 以人类可读 Markdown 格式写入 memory/sessions/YYYY-MM-DD/{sessionId}.md。"""
-    count = ctx.Session.SaveToMarkdown()
+    count = ctx.SaveSessionToMarkdown()
     if count > 0:
         ctx.Print(f"Session saved ({count} messages)")
     else:
@@ -158,31 +146,30 @@ async def _SessionAsync(ctx: CommandContext, args: str) -> None:
 
 async def _ToolsAsync(ctx: CommandContext, args: str) -> None:
     """按分类列出已注册工具。"""
-    tools = ctx.Tools.GetAll()
+    tools = ctx.GetAllTools()
     if not tools:
         ctx.PrintDim("No tools registered.")
         return
 
-    categories: dict[EToolCategory, list[dict]] = {}
-    for name, tool in tools.items():
-        cat = tool.category
+    categories: dict[str, list[dict]] = {}
+    for tool in tools:
+        cat = tool["category"]
         if cat not in categories:
             categories[cat] = []
-        categories[cat].append({"name": name, "desc": tool.description})
+        categories[cat].append(tool)
 
     ctx.PrintDim(f"Registered Tools ({len(tools)}):")
-    for cat in sorted(categories, key=lambda c: c.name):
-        ctx.Print(f"  {cat.name}:")
+    for cat in sorted(categories):
+        ctx.Print(f"  {cat}:")
         for t in categories[cat]:
-            ctx.PrintDim(f"    {t['name']}  - {t['desc']}")
+            ctx.PrintDim(f"    {t['name']}  - {t['description']}")
 
 
 # ==================== /config ====================
 
 async def _ConfigAsync(ctx: CommandContext, args: str) -> None:
     """显示当前 Agent 配置。"""
-    dataComp = ctx.Data
-    config = dataComp.config
+    config = ctx.GetAgentConfig()
 
     ctx.Print("Agent Configuration:")
     ctx.PrintDim(f"  Workspace Root: {config.workspaceRoot}")
@@ -201,8 +188,7 @@ async def _ReloadAsync(ctx: CommandContext, args: str) -> None:
     """重建 harness：重载 rules / skills / MCP 工具配置并重新绑定到 LLM。"""
     ctx.PrintDim("Rebuilding harness...")
     try:
-        await ctx.Harness.BuildAsync(force=True)
-        toolCount = ctx.Tools.Count()
+        toolCount = await ctx.RebuildHarnessAsync()
         ctx.Print(f"Harness rebuilt ({toolCount} tools registered).")
     except Exception as exc:
         ctx.PrintError(f"Harness rebuild failed: {exc}")

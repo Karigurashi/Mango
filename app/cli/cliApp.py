@@ -13,18 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import signal
 import sys
 import traceback
 from typing import Optional
 
-from agent import Agent, AgentManager, AgentStreamEvent, LLMComponent, SessionComponent
-from agent.component.data import AgentConfig
+from agent import AgentStreamEvent
 from common.cancellationToken import CancellationToken
 from common.logger import Logger
 
-from ..channel import BaseChannel, ChannelConfig, ChannelMessage, EChannelState
+from ..channel import BaseChannel, ChannelConfig, ChannelMessage, EChannelState, GroupContext
 from .cliCommand import CliContext
 from .cliConfig import CliConfig
 from .cliRenderer import CliRenderer
@@ -51,7 +49,6 @@ class CliApp(BaseChannel):
     ) -> None:
         super().__init__(ChannelConfig(
             modelName=modelName,
-            enableWorkflow=True,
             commandPrefix="/",
         ))
 
@@ -59,8 +56,8 @@ class CliApp(BaseChannel):
         self._renderer: CliRenderer = CliRenderer(self._cliConfig)
         self._activeToken: Optional[CancellationToken] = None
 
-        # 创建 CLI 单群（触发 CreateAgent + OnGroupCreated）
-        self._cliGroup = self.EnsureGroup(self.CLI_GROUP_ID, "CLI")
+        # 创建 CLI 单群（触发 Agent 创建 + OnGroupCreated）
+        self._cliGroup = self._groupComponent.EnsureGroup(self.CLI_GROUP_ID, "CLI")
 
         Logger.RedirectToStdout()
         Logger.SetLevel(logging.WARNING)
@@ -70,13 +67,18 @@ class CliApp(BaseChannel):
 
     # ---- BaseChannel 钩子 ----
 
-    def CreateAgent(self, groupId: str) -> Agent:
-        """override: 创建带 workflow 的 Agent，tasksDir 按 groupId 隔仓。"""
-        agentConfig = AgentConfig()
-        agentConfig.enableWorkflow = self._config.enableWorkflow
-        agentConfig.enableSchedule = self._config.enableSchedule
-        agentConfig.tasksDir = os.path.join(agentConfig.tasksDir, groupId)
-        return AgentManager.CreateAgent(self._config.modelName, agentConfig)
+    async def _DispatchAgentMessageAsync(
+        self,
+        group: GroupContext,
+        message: ChannelMessage,
+        cancellationToken: Optional[CancellationToken] = None,
+    ) -> None:
+        """override: CLI 阻塞模式 —— 在主事件循环中直接 await Agent，用户等待响应。
+
+        CLI 是单群交互式模式，用户输入后需要等待 Agent 完成才能继续。
+        不使用群线程的 PostMessage 非阻塞模式。
+        """
+        await group.SendMessageAsync(message, cancellationToken)
 
     def OnAgentEventSync(self, groupId: str, event: AgentStreamEvent) -> None:
         """override: Agent 事件 → CliRenderer 实时渲染。"""
@@ -88,7 +90,7 @@ class CliApp(BaseChannel):
             channel=self,
             groupContext=groupContext,
             message=message,
-            registry=self._commandRegistry,
+            registry=self._commandComponent.CommandRegistry,
             cliConfig=self._cliConfig,
             renderer=self._renderer,
         )
@@ -101,14 +103,6 @@ class CliApp(BaseChannel):
     ) -> None:
         """override: CLI 指令通过 CliContext.Print* 直接输出，不需要异步投递。"""
         pass
-
-    # ---- 便捷访问 ----
-
-    @property
-    def _agent(self) -> Agent:
-        """CLI 群组的 Agent 实例。"""
-        return self._cliGroup.agent
-
 
     async def OnStartAsync(
         self,
@@ -183,8 +177,8 @@ class CliApp(BaseChannel):
 
     def _PrintBanner(self) -> None:
         """打印 CLI 欢迎横幅。"""
-        modelName = self._agent.GetComponent(LLMComponent).modelName
-        sessionId = self._agent.GetComponent(SessionComponent).ActiveSessionId
+        modelName = self._cliGroup.GetModelName()
+        sessionId = self._cliGroup.GetActiveSessionId()
         self._renderer.PrintBanner(modelName, sessionId)
 
     def _PrintGoodbye(self) -> None:
@@ -208,11 +202,8 @@ class CliApp(BaseChannel):
         """打印本轮 Token 用量页脚。"""
         if not self._cliConfig.showTokenUsage:
             return
-        llmComp = self._agent.GetComponent(LLMComponent)
-        modelName = llmComp.modelName
-        promptTokens = llmComp.LastPromptTokens
-        completionTokens = llmComp.LastCompletionTokens
-        cacheHitRate = llmComp.LastCacheHitRate
+        modelName = self._cliGroup.GetModelName()
+        promptTokens, completionTokens, cacheHitRate = self._cliGroup.GetLastTokenUsage()
         if promptTokens == 0 and completionTokens == 0:
             return
         self._renderer.PrintFooter(modelName, promptTokens, completionTokens, cacheHitRate)

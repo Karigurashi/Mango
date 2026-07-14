@@ -8,16 +8,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.channel.commandContext import CommandContext
+from app.channel import CommandContext
 
 from .cliConfig import CliConfig
 from .cliRenderer import CliRenderer
 
 if TYPE_CHECKING:
-    from app.channel.baseChannel import BaseChannel
-    from app.channel.channelMessage import ChannelMessage
-    from app.channel.commandRegistry import CommandRegistry
-    from app.channel.groupContext import GroupContext
+    from app.channel import BaseChannel, ChannelMessage, CommandRegistry, GroupContext
 
 
 class CliContext(CommandContext):

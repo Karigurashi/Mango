@@ -120,11 +120,15 @@ class TokenEstimator:
 
         msg 需具备 .content 属性（duck-type，兼容 ContextMessage 等）。
 
-        计入所有协议层字段：content、toolCalls（JSON 序列化）、toolCallId、
-        以及固定协议开销。
+        计入所有协议层字段：content、thinkingContent、toolCalls（JSON 序列化）、
+        toolCallId、以及固定协议开销。
         """
         tokens = self._overheadPerMessage
         tokens += self.Estimate(msg.content) if msg.content else 0
+
+        thinkingContent = getattr(msg, "thinkingContent", "")
+        if thinkingContent:
+            tokens += self.Estimate(thinkingContent)
 
         # Assistant 消息携带的工具调用 JSON 结构（对标 ChatMessage.ToOpenAI 序列化）
         toolCalls = getattr(msg, "toolCalls", None)

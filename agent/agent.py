@@ -7,7 +7,6 @@ Think → Act → Observe 循环。
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from common.const import ERole
@@ -24,6 +23,7 @@ from .core.baseAgent import BaseAgent
 from .component.eventBus.agentStreamEvent import AgentStreamEvent
 from .component.eventBus.eventBusComponent import EventBusComponent
 from .component.llm.llmComponent import LLMComponent
+from .component.loop.loopComponent import LoopComponent
 from .component.session.sessionComponent import SessionComponent
 from .component.contex.contextComponent import ContextComponent
 from .component.rule.ruleComponent import RuleComponent
@@ -50,8 +50,7 @@ class Agent(BaseAgent):
         config: AgentConfig | None = None,
     ) -> None:
         super().__init__()
-        self._runLock: asyncio.Lock | None = None  # 惰性初始化，避免 Python 3.12+ 同步构造时无事件循环崩溃
-        self._lastContent: str = ""                 # 最近一轮 LLM 产出的文本内容，供 _ExecuteToolCallsAsync 使用
+        self._lastContent: str = ""  # 最近一轮 LLM 产出的文本内容，供 _ExecuteToolCallsAsync 使用
 
         # ---- 挂载全部 Component（DataComponent 需预注入 LLM，其余即用即取）----
         self._dataComp = self.AddComponent(DataComponent)
@@ -60,6 +59,7 @@ class Agent(BaseAgent):
         if config is not None:
             self._dataComp.config = config
 
+        self._loopComp = self.GetComponent(LoopComponent)
         self._eventBusComp = self.GetComponent(EventBusComponent)
         self._llmComponent = self.GetComponent(LLMComponent)
         self._session = self.GetComponent(SessionComponent)
@@ -106,9 +106,7 @@ class Agent(BaseAgent):
         finally 中的 AfterTurnAsync 都会被调用，避免内存泄漏
         （已压缩消息未 Purge、外存文件未 Cleanup）。
         """
-        if self._runLock is None:
-            self._runLock = asyncio.Lock()
-        async with self._runLock:
+        async with self._loopComp.runLock:
             normalExit = False
             try:
                 await self._RunReActCoreAsync(userMessage, cancellationToken, stream=stream)
@@ -220,6 +218,7 @@ class Agent(BaseAgent):
             self._ctxComp.Ingest(
                 ERole.ASSISTANT, result.content,
                 lodLevel=EContextLodLevel.SUMMARIZABLE,
+                thinkingContent=self._llmComponent.LastThinkingContent,
             )
 
         return result.toolCalls, False
@@ -257,6 +256,7 @@ class Agent(BaseAgent):
             self._ctxComp.Ingest(
                 ERole.ASSISTANT, result.content,
                 lodLevel=EContextLodLevel.SUMMARIZABLE,
+                thinkingContent=self._llmComponent.LastThinkingContent,
             )
 
         return result.toolCalls, False
@@ -283,6 +283,7 @@ class Agent(BaseAgent):
             self._lastContent,
             lodLevel=EContextLodLevel.SUMMARIZABLE,
             toolCalls=toolCalls,
+            thinkingContent=self._llmComponent.LastThinkingContent,
         )
 
         # Ingest TOOL 结果

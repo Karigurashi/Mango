@@ -22,6 +22,7 @@ from .mcpServerConfig import McpServerConfig
 if TYPE_CHECKING:
     from agent.core.baseAgent import BaseAgent
     from .mcpClient import McpStdioClient
+    from .mcpHttpClient import McpHttpClient
     from .mcpTool import McpTool
 
 
@@ -43,7 +44,7 @@ class McpComponent(IComponent):
 
     def __init__(self) -> None:
         self._servers: dict[str, McpServerConfig] = {}
-        self._clients: list["McpStdioClient"] = []
+        self._clients: list["McpStdioClient | McpHttpClient"] = []
 
     # ---- 生命周期 ----
 
@@ -112,6 +113,10 @@ class McpComponent(IComponent):
                     d["url"] = config.url
             if config.env:
                 d["env"] = config.env
+            if config.tools:
+                d["tools"] = config.tools
+            if config.toolsMax != McpServerConfig._DEFAULT_TOOLS_MAX:
+                d["toolsMax"] = config.toolsMax
             serversDict[name] = d
         result = {"mcpServers": serversDict}
         return json.dumps(result, indent=2, ensure_ascii=False)
@@ -146,6 +151,8 @@ class McpComponent(IComponent):
                     env=serverData.get("env", {}),
                     scope=serverData.get("scope", "local"),
                     enabled=serverData.get("enabled", True),
+                    tools=serverData.get("tools", []),
+                    toolsMax=serverData.get("toolsMax", 0),
                 )
                 self.Register(config)
                 count += 1
@@ -160,12 +167,11 @@ class McpComponent(IComponent):
         self,
         cancellationToken: Optional[CancellationToken] = None,
     ) -> list["McpTool"]:
-        """连接全部已启用的 stdio MCP Server，发现并适配其工具。
+        """连接全部已启用的 MCP Server，发现并适配其工具。
 
         整体超时保护：包装 _ConnectAllInternalAsync，超过 _CONNECT_ALL_TIMEOUT 后
         返回空列表，避免起动阶段某个偏远 Server 永久阻塞拖垮整个 Agent。
-        任一 Server 失败仅记录日志并跳过，不影响其他 Server 与整体 Agent 构建。远程（http/sse）
-        传输暂不支持。
+        任一 Server 失败仅记录日志并跳过，不影响其他 Server 与整体 Agent 构建。
 
         Returns:
             可注入 ToolComponent 的 McpTool 列表。
@@ -188,7 +194,7 @@ class McpComponent(IComponent):
     ) -> list["McpTool"]:
         """ConnectAllAsync 内部实现，不含超时包装。
 
-        所有已启用 stdio Server 并行启动、握手、发现工具，
+        所有已启用 Server 并行启动、握手、发现工具，
         单 Server 异常隔离，不影响其余 Server。
         """
         servers = self.GetEnabled()
@@ -220,34 +226,67 @@ class McpComponent(IComponent):
     ) -> tuple[str, list["McpTool"]]:
         """连接单台 MCP Server 并发现工具，异常隔离：失败返回空列表。
 
+        支持 stdio / http / sse 三种传输协议。
         仅当 StartAsync → InitializeAsync → ListToolsAsync 全链路成功
         后才将 client 加入 _clients 并返回工具列表，中途失败则清理资源。
         """
         from .mcpClient import McpStdioClient
+        from .mcpHttpClient import McpHttpClient
         from .mcpTool import McpTool
 
-        if server.transport != EMcpTransport.STDIO:
+        # ---- stdio ----
+        if server.transport == EMcpTransport.STDIO:
+            launchCommand = server.GetLaunchCommand()
+            if not launchCommand:
+                Logger.Warning(f"MCP[{server.name}]: missing launch command, skipped")
+                return server.name, []
+
+            client = McpStdioClient(server.name, launchCommand, server.ResolveEnv())
+            if not await client.StartAsync(cancellationToken):
+                return server.name, []
+
+            if not await client.InitializeAsync(cancellationToken):
+                client.Terminate()
+                return server.name, []
+
+        # ---- http / sse ----
+        elif server.transport in (EMcpTransport.HTTP, EMcpTransport.SSE):
+            if not server.url:
+                Logger.Warning(f"MCP[{server.name}]: missing url for http/sse, skipped")
+                return server.name, []
+
+            client = McpHttpClient(server.name, server.url)
+            if not await client.StartAsync(cancellationToken):
+                return server.name, []
+
+            if not await client.InitializeAsync(cancellationToken):
+                client.Terminate()
+                return server.name, []
+
+        else:
             Logger.Warning(
-                f"MCP[{server.name}]: transport '{server.transport.ToLabel()}' "
-                f"not supported yet (only stdio), skipped"
+                f"MCP[{server.name}]: unknown transport '{server.transport.ToLabel()}', skipped"
             )
-            return server.name, []
-
-        launchCommand = server.GetLaunchCommand()
-        if not launchCommand:
-            Logger.Warning(f"MCP[{server.name}]: missing launch command, skipped")
-            return server.name, []
-
-        client = McpStdioClient(server.name, launchCommand, server.ResolveEnv())
-        if not await client.StartAsync(cancellationToken):
-            return server.name, []
-
-        if not await client.InitializeAsync(cancellationToken):
-            client.Terminate()
             return server.name, []
 
         discovered = await client.ListToolsAsync(cancellationToken)
         tools: list["McpTool"] = []
+
+        # ---- 白名单过滤 ----
+        whitelist = server.tools
+        if whitelist:
+            discovered = [s for s in discovered if s.get("name", "") in whitelist]
+
+        # ---- 上限截断 ----
+        maxTools = server.toolsMax
+        totalCount = len(discovered)
+        if maxTools > 0 and totalCount > maxTools:
+            Logger.Warning(
+                f"MCP[{server.name}]: {totalCount} tools discovered, "
+                f"truncating to first {maxTools} (set toolsMax=0 or tools whitelist to override)"
+            )
+            discovered = discovered[:maxTools]
+
         for spec in discovered:
             name = spec.get("name", "")
             if not name:
@@ -261,7 +300,7 @@ class McpComponent(IComponent):
             ))
 
         self._clients.append(client)
-        Logger.Info(f"MCP[{server.name}]: connected, {len(discovered)} tool(s) discovered")
+        Logger.Info(f"MCP[{server.name}]: connected via {server.transport.ToLabel()}, {len(tools)}/{totalCount} tool(s) registered")
         return server.name, tools
 
     # ---- 管理 ----

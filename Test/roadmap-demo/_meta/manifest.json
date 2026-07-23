@@ -1,0 +1,38 @@
+{
+  "modules": {
+    "agent-core": {
+      "moduleId": "agent-core",
+      "fileCount": 86,
+      "codeFileCount": 86,
+      "sampleHash": "6249d74f1a214f4c",
+      "missingRoots": [],
+      "checkedAt": 1784826196.981726
+    },
+    "agent-llm": {
+      "moduleId": "agent-llm",
+      "fileCount": 20,
+      "codeFileCount": 20,
+      "sampleHash": "f52a24a9dd5e0bd8",
+      "missingRoots": [],
+      "checkedAt": 1784826196.9827263
+    },
+    "agent-tool": {
+      "moduleId": "agent-tool",
+      "fileCount": 28,
+      "codeFileCount": 28,
+      "sampleHash": "f54698845fb66b65",
+      "missingRoots": [],
+      "checkedAt": 1784826196.984726
+    },
+    "settlement-demo": {
+      "moduleId": "settlement-demo",
+      "fileCount": 28,
+      "codeFileCount": 28,
+      "sampleHash": "f54698845fb66b65",
+      "missingRoots": [],
+      "checkedAt": 1784826196.9857259
+    }
+  },
+  "updatedAt": 1784826196.9867346,
+  "repoRoot": "C:\\Users\\wuwenjun\\Desktop\\Mango"
+}

@@ -4,7 +4,7 @@
 tools/call 调用工具。消息按行分隔（newline-delimited JSON-RPC），请求/响应
 通过 id 配对，期间出现的通知（无 id）被忽略。
 
-仅支持 stdio 传输；http/sse 远程传输由 McpComponent 显式标注为暂不支持。
+仅支持 stdio 传输；http/sse 远程传输由 McpHttpClient 负责。
 """
 
 from __future__ import annotations

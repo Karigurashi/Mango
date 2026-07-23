@@ -1,65 +1,33 @@
-"""InjectionComponent —— 将后台产生的内容推送到 Agent 主循环，忙时排队。"""
+"""InjectionComponent —— 将后台产生的内容注入 Agent，由运行锁自然排队。"""
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
-from agent.component.data.dataComponent import DataComponent
-from agent.component.data.eAgentState import EAgentState
-from agent.component.eventBus.agentStreamEvent import EAgentStreamEventType
+from agent.component.loop.loopComponent import LoopComponent
 from agent.core.baseComponent import IComponent
 
 if TYPE_CHECKING:
-    from agent.component.eventBus.agentStreamEvent import AgentStreamEvent
     from agent.core.baseAgent import BaseAgent
 
 
 class InjectionComponent(IComponent):
-    """后台内容注入组件 —— 在 Agent 空闲时将内容推入主循环。
+    """后台内容注入组件 —— 将内容作为独立 Run 注入 Agent。
 
-    由 ScheduleComponent / WorkflowComponent 等后台任务消费者调用，
-    统一处理"Agent 忙时排队 → DONE 事件后冲刷"的推送模式。
+    由 ScheduleComponent / WorkflowComponent 等后台任务消费者调用。
+    注入的 Run 经 LoopComponent.CreateTask 创建：Agent 忙时在运行锁上
+    FIFO 排队，当前 Run 完成后自动唤醒执行；Task 统一登记，Destroy 时
+    批量取消。无需忙闲判断与 DONE 事件冲刷。
     """
 
     def OnInitialize(self, agent: BaseAgent) -> None:
         self._agent: BaseAgent = agent
-        self._dataComp = agent.GetComponent(DataComponent)
-
-        from agent.component.eventBus.eventBusComponent import EventBusComponent
-        self._eventBus = agent.GetComponent(EventBusComponent)
-        self._eventBus.AddListener(self._OnAgentEvent)
-
-        self._pendingContents: list[str] = []
-
-    def OnDestroy(self) -> None:
-        self._eventBus.RemoveListener(self._OnAgentEvent)
-        self._pendingContents.clear()
+        self._loopComp = agent.GetComponent(LoopComponent)
 
     def InjectAsync(self, content: str) -> None:
-        """将内容推送到 Agent 主循环；若 Agent 忙碌则排队等待。
+        """将内容作为独立 Run 注入 Agent；忙时在运行锁上自然排队。
 
         Args:
             content: 待注入的文本内容。
         """
-        if self._IsAgentBusy():
-            self._pendingContents.append(content)
-        else:
-            self._DoInject(content)
-
-    def _IsAgentBusy(self) -> bool:
-        return self._dataComp.state in (
-            EAgentState.THINKING,
-            EAgentState.ACTING,
-            EAgentState.WAITING_USER,
-        )
-
-    def _OnAgentEvent(self, event: AgentStreamEvent) -> None:
-        if event.eventType == EAgentStreamEventType.DONE:
-            pending = self._pendingContents[:]
-            self._pendingContents.clear()
-            for content in pending:
-                self._DoInject(content)
-
-    def _DoInject(self, content: str) -> None:
-        asyncio.create_task(self._agent.RunStreamAsync(content))
+        self._loopComp.CreateTask(self._agent.RunStreamAsync(content))

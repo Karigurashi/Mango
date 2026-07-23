@@ -70,17 +70,30 @@ class ToolComponent(IComponent):
         """实例级工具实例注册表，隔离不同 Agent 的工具实例。"""
         self._disabled: set[str] = set()
         """实例级禁用工具名称集合，被禁用的工具不会出现在 GetAll/GetAllToolSpecs 等查询中。"""
-        self._defaultTimeout: float | None = 300.0
+        self._defaultTimeout: float | None = 120.0
         """全局默认工具超时秒数，None 表示不设限制。单工具可通过 timeout 类属性覆盖。"""
         self._executionStats: dict[str, deque[float]] = {}
         """每个工具的执行耗时队列（仅保留最近 100 次）。"""
         self._executionStatsLimit: int = 100
+        self._fileSearchUtils: "FileSearchUtils | None" = None
+        """File 搜索工具共享实例，OnInitialize 时从 DataComponent.config 读取 mangoIgnorePath 创建。"""
+
+    # ---- 属性 ----
+
+    @property
+    def fileSearchUtils(self) -> "FileSearchUtils | None":
+        """File 搜索工具共享实例，供 glob / grep 等工具通过 GetComponent(ToolComponent) 获取。"""
+        return self._fileSearchUtils
 
     # ---- 生命周期 ----
 
     def OnInitialize(self, agent: BaseAgent) -> None:
         """挂载后初始化，持有 Agent 引用供工具调度时注入。"""
         self._agent = agent
+        from .file.fileUtils import FileSearchUtils
+        from agent.component.data.dataComponent import DataComponent
+        config = agent.GetComponent(DataComponent).config
+        self._fileSearchUtils = FileSearchUtils(config.mangoIgnorePath)
 
     def OnDestroy(self) -> None:
         """从 BaseAgent 卸载时回调，调用各工具清理钩子并清空实例。"""
@@ -415,7 +428,6 @@ from .file import (  # noqa: F401, E402
     globTool,
     grepTool,
     readTool,
-    searchCodebaseTool,
     searchReplaceTool,
     writeTool,
 )

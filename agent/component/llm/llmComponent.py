@@ -48,6 +48,7 @@ class LLMComponent(IComponent):
         self._requestParams = LLMRequestParams()
         self._contentBuf = StringIO()             # 每轮复用，累积文本回复
         self._thinkingBuf = StringIO()            # 每轮复用，累积思考链
+        self._lastThinkingContent = ""            # 最近一次调用的完整思考链
         self._lastPromptTokens = 0                # 最近一次调用的 promptTokens
         self._lastCompletionTokens = 0            # 最近一次调用的 completionTokens
         self._lastCacheHitRate = 0.0              # 最近一次调用的缓存命中率 (0-100)
@@ -93,6 +94,11 @@ class LLMComponent(IComponent):
     @property
     def providerName(self) -> str:
         return self._llm.providerName
+
+    @property
+    def LastThinkingContent(self) -> str:
+        """最近一次 LLM 调用的完整思考链，供上下文注入回传。"""
+        return self._lastThinkingContent
 
     @property
     def LastPromptTokens(self) -> int:
@@ -199,6 +205,7 @@ class LLMComponent(IComponent):
 
         content = response.content or ""
         thinking = response.reasoningContent or ""
+        self._lastThinkingContent = thinking
 
         self._EmitTextEvent(content, turnIndex, isComplete=True)
         if thinking:
@@ -260,6 +267,7 @@ class LLMComponent(IComponent):
 
         content = self._contentBuf.getvalue()
         thinking = self._thinkingBuf.getvalue()
+        self._lastThinkingContent = thinking
 
         self._EmitTextEvent(content, turnIndex, isComplete=True)
         if thinking:

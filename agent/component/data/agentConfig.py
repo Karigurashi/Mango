@@ -74,6 +74,7 @@ class AgentConfig:
     mcpJsonPath: str = str(ERoad.MCP_JSON_PATH)         # MCP 配置文件路径（.mcp.json）
     memoryDir: str = str(ERoad.MEMORY_DIR)              # 记忆持久化目录
     tasksDir: str = str(ERoad.TASKS_DIR)                # 定时任务 JSON 目录
+    mangoIgnorePath: str = str(ERoad.MANGO_IGNORE)       # .mangoIgnore 自定义忽略文件路径（gitignore 语义）
     
     # -- Token 预算 --
     maxTokens: int = 200000                # Token 预算上限
@@ -82,7 +83,7 @@ class AgentConfig:
     # -- 压缩参数 --
     compactThreshold: float = 0.85         # 触发压缩的上下文占用率阈值（0.0-1.0）
     keepRecentTurns: int = 3               # 压缩时保留的最近完整轮数
-    coldOffloadGraceSeconds: int = 300     # 冷卸载宽限期（秒）
+    coldOffloadGraceSeconds: int = 600     # 冷卸载宽限期（秒）
     autoColdOffload: bool = True           # 是否在每轮用户对话前自动冷卸载（True 开启）
     summaryMaxTokens: int = 1024           # 单条消息摘要 LLM 最大输出 token
     batchSummaryMaxTokens: int = 8192      # 批量压缩摘要 LLM 最大输出 token
@@ -90,10 +91,10 @@ class AgentConfig:
     
     # -- 落盘参数 --
     enablePersist: bool = True             # 是否启用大结果落盘+预览
-    persistCharThreshold: int = 25000      # 触发落盘的字符数阈值
+    persistCharThreshold: int = 50000      # 触发落盘的字符数阈值
     persistPreviewChars: int = 5000        # 预览截断字符数
     storeDir: str = str(ERoad.STORE_PATH)    # 内容外存目录
-    storeMaxTotalSize: int = 50 * 1024 * 1024       # 外存目录总容量上限（超限LRU淘汰，默认50MB）
+    storeMaxTotalSize: int = 500 * 1024 * 1024       # 外存目录总容量上限（超限LRU淘汰，默认50MB）
     storeMaxFileCount: int = 100           # 外存目录最大文件数（超限LRU淘汰，默认100）
     
     # -- 子系统开关 --

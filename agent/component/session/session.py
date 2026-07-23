@@ -229,9 +229,9 @@ class Session:
                 "chatMessage": {
                     "role": cm.role,
                     "content": cm.content,
+                    "thinkingContent": cm.thinkingContent,
                     "toolCalls": tcs,
                     "toolCallId": cm.toolCallId,
-                    "cacheControl": cm.cacheControl,
                 },
             }
             messages.append(msgDict)
@@ -249,9 +249,9 @@ class Session:
             chatMsg = ChatMessage(
                 role=ERole(cmData["role"]),
                 content=cmData["content"],
+                thinkingContent=cmData.get("thinkingContent", ""),
                 toolCalls=tcs,
                 toolCallId=cmData.get("toolCallId", ""),
-                cacheControl=cmData.get("cacheControl", False),
             )
             msg = ContextMessage(
                 chatMessage=chatMsg,

@@ -53,23 +53,23 @@ class ChatMessage:
     Attributes:
         role: ERole 枚举值
         content: 文本内容（简单场景）或 ContentBlock 列表（多模态场景）。
+        thinkingContent: 思考链（GLM / DeepSeek 等，序列化为 reasoning_content）。
         toolCalls: assistant 发起的工具调用列表。
         toolCallId: tool 角色消息对应的调用 ID。
-        cacheControl: 标记此消息可被 Prompt Caching。
     """
 
     role: ERole
     content: str
+    thinkingContent: str = ""
     toolCalls: Optional[list[ToolCall]] = None
     toolCallId: str = ""
-    cacheControl: bool = False
 
     # ---- 协议缓存（惰性初始化，避免高频调用重复分配 dict）----
     _cacheOpenAI: Optional[dict] = field(default=None, init=False, repr=False)
     _cacheAnthropic: Optional[dict] = field(default=None, init=False, repr=False)
 
     def InvalidateCache(self) -> None:
-        """清除协议缓存。当 role/content/toolCalls/toolCallId 被修改后必须调用。"""
+        """清除协议缓存。当 role/content/thinkingContent/toolCalls/toolCallId 被修改后必须调用。"""
         self._cacheOpenAI = None
         self._cacheAnthropic = None
 
@@ -77,6 +77,8 @@ class ChatMessage:
         if self._cacheOpenAI is not None:
             return self._cacheOpenAI
         result: dict = {"role": self.role, "content": self.content}
+        if self.thinkingContent:
+            result["reasoning_content"] = self.thinkingContent
         if self.toolCalls:
             result["tool_calls"] = [
                 {
@@ -95,11 +97,7 @@ class ChatMessage:
         return result
 
     def ToAnthropic(self) -> dict:
-        """转为 Anthropic 消息格式。
-
-        注：cache_control 不由本方法注入，统一由 AnthropicProtocol.FormatMessages 处理，
-        确保缓存 dict 不含可变的外部注入字段。
-        """
+        """转为 Anthropic 消息格式。"""
         if self._cacheAnthropic is not None:
             return self._cacheAnthropic
         self._cacheAnthropic = {"role": self.role, "content": self.content}

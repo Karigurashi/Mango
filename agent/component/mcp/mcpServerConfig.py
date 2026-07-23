@@ -31,7 +31,11 @@ class McpServerConfig:
         env: 环境变量字典（支持 ``${VAR}`` 占位符）。
         scope: 作用域（``"local"`` / ``"project"`` / ``"user"``），对标 Claude Code。
         enabled: 是否启用。
+        tools: 工具白名单（空列表 = 全部注册）。
+        toolsMax: 单个 Server 最多注册的工具数（0 = 不限制，默认 30）。
     """
+
+    _DEFAULT_TOOLS_MAX = 30
 
     def __init__(
         self,
@@ -43,6 +47,8 @@ class McpServerConfig:
         env: dict[str, str] | None = None,
         scope: str = "local",
         enabled: bool = True,
+        tools: list[str] | None = None,
+        toolsMax: int = 0,
     ) -> None:
         self.name = name
         self.transport = transport
@@ -52,6 +58,8 @@ class McpServerConfig:
         self.env = env or {}
         self.scope = scope
         self.enabled = enabled
+        self.tools = tools or []
+        self.toolsMax = toolsMax if toolsMax > 0 else self._DEFAULT_TOOLS_MAX
 
     # ---- 工具方法 ----
 

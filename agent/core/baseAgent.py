@@ -4,8 +4,8 @@
 子类可 override 任意方法注入 harness 逻辑（上下文组装、ReAct 循环等）。
 
 【Component 生命周期 —— 能力即用即取】
-1. AddComponent<T>()  —— 无参构造实例并注册（不触发 OnInitialize）。
-2. GetComponent<T>()  —— 若未创建则自动构造，首次访问时触发 OnInitialize 完成依赖注入。
+1. AddComponent<T>()  —— 无参构造实例，注册时自动触发 OnInitialize 完成依赖注入。
+2. GetComponent<T>()  —— 若未创建则自动构造并初始化。
 3. RemoveComponent / Destroy —— 调用 OnDestroy()，执行清理。
 """
 
@@ -25,7 +25,6 @@ class BaseAgent(abc.ABC):
 
     def __init__(self) -> None:
         self._components: Dict[Type[IComponent], IComponent] = {}
-        self._initializedComponents: set[Type[IComponent]] = set()
 
     @abc.abstractmethod
     async def RunStreamAsync(
@@ -44,48 +43,40 @@ class BaseAgent(abc.ABC):
     # ---- Component 管理 ----
 
     def AddComponent(self, compType: Type[T]) -> T:
-        """注册指定类型 Component，无参构造实例（不触发 OnInitialize）。
+        """注册指定类型 Component，无参构造实例并自动触发 OnInitialize。
 
         若同类型已存在，直接返回已有实例，不重复构造。
-        适用于需要在 OnInitialize 前注入外部依赖的场景（如 DataComponent.llm）。
-        OnInitialize 在首次 GetComponent 时自动触发。
 
         Args:
             compType: Component 类型（泛型 T）。
 
         Returns:
-            注册的 Component 实例。
+            已初始化的 Component 实例。
         """
-        existing = self._components.get(compType)
-        if existing is not None:
-            return existing  # type: ignore[return-value]
+        return self.GetComponent(compType, isGenerate=True)  # type: ignore[return-value]
+
+    def GetComponent(self, compType: Type[T], isGenerate: bool = True) -> Optional[T]:
+        """获取指定类型 Component。
+
+        isGenerate=True（默认）：未创建时自动构造并触发 OnInitialize。
+        isGenerate=False：仅查找已挂载实例，未找到返回 None。
+
+        Args:
+            compType: Component 类型（泛型 T）。
+            isGenerate: 未找到时是否自动创建。
+
+        Returns:
+            已初始化的 Component 实例，isGenerate=False 且未挂载时返回 None。
+        """
+        component = self._components.get(compType)
+        if component is not None:
+            return component  # type: ignore[return-value]
+        if not isGenerate:
+            return None
 
         component = compType()
         self._components[compType] = component
-        return component
-
-    def GetComponent(self, compType: Type[T]) -> T:
-        """获取指定类型 Component，未创建时自动构造并触发 OnInitialize。
-
-        若 Component 尚未创建，先无参构造实例，再调用 OnInitialize(self)
-        完成依赖注入。已通过 AddComponent 预注册但尚未初始化的 Component
-        也会在此次首次访问时完成初始化。
-
-        Args:
-            compType: Component 类型（泛型 T）。
-
-        Returns:
-            已初始化的 Component 实例，保证非 None。
-        """
-        component = self._components.get(compType)
-        if component is None:
-            component = compType()
-            self._components[compType] = component
-
-        if compType not in self._initializedComponents:
-            self._initializedComponents.add(compType)
-            component.OnInitialize(self)
-
+        component.OnInitialize(self)
         return component  # type: ignore[return-value]
 
     def RemoveComponent(self, compType: Type[T]) -> Optional[T]:
@@ -95,7 +86,6 @@ class BaseAgent(abc.ABC):
         """
         component = self._components.pop(compType, None)
         if component is not None:
-            self._initializedComponents.discard(compType)
             component.OnDestroy()
         return component  # type: ignore[return-value]
 
@@ -112,4 +102,3 @@ class BaseAgent(abc.ABC):
         for component in list(self._components.values()):
             component.OnDestroy()
         self._components.clear()
-        self._initializedComponents.clear()

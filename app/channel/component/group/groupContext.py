@@ -31,13 +31,13 @@ import queue
 import threading
 from typing import TYPE_CHECKING, Optional
 
-from agent import Agent, AgentStreamEvent, EventBusComponent, LLMComponent, SessionComponent
 from common.cancellationToken import CancellationToken
 from common.logger import Logger
 
 from ...channelMessage import ChannelMessage
 
 if TYPE_CHECKING:
+    from agent import Agent, AgentStreamEvent, EventBusComponent, LLMComponent, SessionComponent
     from ...baseChannel import BaseChannel
 
 
@@ -45,7 +45,7 @@ class GroupContext:
     """单群上下文 —— 一个 Agent 实例 + 消息串行处理。
 
     每个群拥有独立的守护线程和事件循环，Agent 在群线程中串行执行。
-    Agent 内部 _runLock 保证同一 Agent 不并发重入（在同一事件循环中生效）。
+    Agent 内部运行锁（LoopComponent.runLock）保证同一 Agent 不并发重入（在同一事件循环中生效）。
 
     两种消息分发方式:
         - PostMessage: 非阻塞，消息入队后立即返回。群线程串行消费。
@@ -54,7 +54,7 @@ class GroupContext:
           适用于单群交互式 Channel（CLI），用户需要等待响应。
 
     注意: 同一 GroupContext 不应混用两种方式。CLI 用 SendMessageAsync，
-    飞书用 PostMessage。混用会导致 Agent._runLock 跨事件循环失效。
+    飞书用 PostMessage。混用会导致 Agent 运行锁跨事件循环失效。
 
     Attributes:
         groupId: 群唯一标识。
@@ -68,6 +68,7 @@ class GroupContext:
         groupName: str,
         agent: Agent,
     ) -> None:
+        from agent.component.eventBus.eventBusComponent import EventBusComponent
         self._channel: BaseChannel = channel
         self._agent: Agent = agent
         self.groupId: str = groupId
@@ -132,7 +133,7 @@ class GroupContext:
         适用于单群交互式 Channel（CLI），用户需要等待 Agent 响应。
         不经过群线程，直接在当前事件循环中 await Agent。
 
-        注意: 不要与 PostMessage 混用，否则 Agent._runLock
+        注意: 不要与 PostMessage 混用，否则 Agent 运行锁
         会跨事件循环失效。
 
         Args:
@@ -153,7 +154,7 @@ class GroupContext:
         """群 Agent 线程入口：创建独立事件循环，串行消费消息队列。
 
         每条消息通过 run_until_complete 在本线程的事件循环中执行，
-        Agent 内部 _runLock 在同一循环中生效，保证串行。
+        Agent 内部运行锁在同一循环中生效，保证串行。
         收到 None 哨兵或 _running=False 时退出。
         """
         self._loop = asyncio.new_event_loop()
@@ -207,10 +208,12 @@ class GroupContext:
 
     def GetModelName(self) -> str:
         """获取当前群组 Agent 使用的模型名称。"""
+        from agent.component.llm.llmComponent import LLMComponent
         return self._agent.GetComponent(LLMComponent).modelName
 
     def GetActiveSessionId(self) -> int:
         """获取当前活跃会话 ID。"""
+        from agent.component.session.sessionComponent import SessionComponent
         return self._agent.GetComponent(SessionComponent).ActiveSessionId
 
     def GetLastTokenUsage(self) -> tuple[int, int, float]:
@@ -219,6 +222,7 @@ class GroupContext:
         Returns:
             (promptTokens, completionTokens, cacheHitRate)
         """
+        from agent.component.llm.llmComponent import LLMComponent
         llm = self._agent.GetComponent(LLMComponent)
         return llm.LastPromptTokens, llm.LastCompletionTokens, llm.LastCacheHitRate
 

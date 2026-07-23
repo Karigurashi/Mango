@@ -104,9 +104,9 @@ class ContextMessage:
         clonedChat = ChatMessage(
             role=cm.role,
             content=cm.content,
+            thinkingContent=cm.thinkingContent,
             toolCalls=copy.deepcopy(cm.toolCalls) if cm.toolCalls else None,
             toolCallId=cm.toolCallId,
-            cacheControl=cm.cacheControl,
         )
         return ContextMessage(
             chatMessage=clonedChat,

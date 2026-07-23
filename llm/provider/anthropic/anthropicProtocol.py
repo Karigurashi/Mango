@@ -15,16 +15,13 @@ class AnthropicProtocol:
 
     负责 ChatMessage → Anthropic dict 转换、system 消息分离、
     ToolSpec → tools 数组、response content block → ToolCall 解析、
-    KV-Cache (cache_control) 注入、Extended Thinking 配置。
+    Extended Thinking 配置。
     """
 
     # ---- 消息格式 ----
 
     @staticmethod
-    def FormatMessages(
-        messages: list[ChatMessage],
-        enableCache: bool = False,
-    ) -> tuple[list[str], list[dict]]:
+    def FormatMessages(messages: list[ChatMessage]) -> tuple[list[str], list[dict]]:
         """分离 system 消息并转换格式，正确编码工具回合。
 
         Anthropic 不接受 ``role="tool"``，且工具调用须以 content block 表达：
@@ -65,8 +62,6 @@ class AnthropicProtocol:
             else:
                 d = m.ToAnthropic()
 
-            if enableCache and m.cacheControl:
-                d = {**d, "cache_control": AnthropicProtocol.BuildCacheControl()}
             chatMessages.append(d)
 
         _FlushToolResults()
@@ -116,13 +111,6 @@ class AnthropicProtocol:
                 ))
         return result
 
-    # ---- KV-Cache ----
-
-    @staticmethod
-    def BuildCacheControl() -> dict:
-        """生成 Anthropic Prompt Caching 标记。"""
-        return {"type": "ephemeral"}
-
     # ---- 参数构建 ----
 
     def BuildRequestParams(
@@ -138,10 +126,9 @@ class AnthropicProtocol:
         maxTokens = requestParams.maxTokens
         enableThinking = requestParams.enableThinking
         thinkingBudget = requestParams.thinkingBudget
-        enableCache = requestParams.enableCache
         extraParams = requestParams.extraParams
 
-        systemPrompts, chatMessages = self.FormatMessages(messages, enableCache)
+        systemPrompts, chatMessages = self.FormatMessages(messages)
 
         params: dict = {
             "model": modelName,

@@ -50,11 +50,15 @@ class WriteFileTool(BaseTool):
     def _Invoke(
         self,
         file_path: str,
-        file_content: str,
+        file_content: str = "",
         add_last_line_newline: bool = True,
         append: bool = False,
         continuation_context: str = "",
+        **kwargs,
     ) -> ToolResult:
+        # 参数别名兼容：LLM 常将 file_content 误写为 content
+        if not file_content:
+            file_content = kwargs.pop("content", "")
         try:
             # ---- 追加模式下的衔接校验 ----
             if append and continuation_context:

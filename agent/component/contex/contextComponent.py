@@ -99,6 +99,7 @@ class ContextComponent(IComponent):
         lodLevel: EContextLodLevel | None = None,
         toolCalls: list[ToolCall] | None = None,
         toolCallId: str = "",
+        thinkingContent: str = "",
     ) -> ContextMessage:
         """摄入一条消息到 SessionComponent。
 
@@ -113,6 +114,7 @@ class ContextComponent(IComponent):
                        识别工具回合（OpenAI 要求 tool 消息前置 tool_calls）。
             toolCallId: TOOL 消息对应的工具调用 ID，必须与发起的
                         ToolCall.id 匹配，否则 OpenAI 拒绝该消息。
+            thinkingContent: ASSISTANT 思考链，回传时序列化为 reasoning_content。
 
         Returns:
             创建并写入 SessionComponent 的 ContextMessage。
@@ -125,6 +127,7 @@ class ContextComponent(IComponent):
             chatMessage=ChatMessage(
                 role=role,
                 content=content,
+                thinkingContent=thinkingContent,
                 toolCalls=toolCalls,
                 toolCallId=toolCallId,
             ),
@@ -222,23 +225,7 @@ class ContextComponent(IComponent):
         for cm in conversationMessages:
             self._chatMessages.append(cm.chatMessage)
 
-        # 标记 Prompt Caching：连续 RESIDENT 前缀末尾打 cacheControl
-        self._ApplyCacheControl(residentMessages)
-
         return self._chatMessages
-
-    @staticmethod
-    def _ApplyCacheControl(residentMessages: list[ContextMessage]) -> None:
-        """在连续 RESIDENT 前缀末尾打 cacheControl 标记。
-
-        Anthropic Prompt Caching 规则：cache_control 标记的消息及之前
-        所有内容被服务端缓存为 KV-Cache。仅在 stable prefix（RESIDENT）
-        末尾标记，后续动态消息不标记以避免前缀变化导致缓存全部失效。
-
-        标记直接修改 ChatMessage.cacheControl，不创建新对象。
-        """
-        if residentMessages:
-            residentMessages[-1].chatMessage.cacheControl = True
 
     async def CompactAsync(self, force: bool = False) -> int:
         """统一容量管理入口，委托 ContextCompactor.ManageCapacityAsync。

@@ -27,9 +27,10 @@ class ERoad(StrEnum):
     SETTINGS_JSON = "workspace/settings.json"
     MODELS_JSON = "workspace/models.json"
     MEMORY_DIR = "workspace/memory/"
-    MCP_JSON_PATH = "workspace/mcp.json"
+    MCP_JSON_PATH = "workspace/.mcp.json"
     STORE_PATH = "workspace/.store/"
 
     SKILLS_DIR = "workspace/skills"
     RULES_DIR = "workspace/rules"
     TASKS_DIR = "workspace/tasks"
+    MANGO_IGNORE = "workspace/.mangoIgnore"

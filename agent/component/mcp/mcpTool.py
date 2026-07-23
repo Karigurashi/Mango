@@ -15,6 +15,7 @@ from agent.component.tool.toolResult import ToolResult
 from llm.provider.chatMessage import ToolSpec
 
 from .mcpClient import McpStdioClient
+from .mcpHttpClient import McpHttpClient
 
 
 class McpTool(BaseTool):
@@ -32,7 +33,7 @@ class McpTool(BaseTool):
 
     def __init__(
         self,
-        client: McpStdioClient,
+        client: McpStdioClient | McpHttpClient,
         serverName: str,
         remoteName: str,
         description: str,

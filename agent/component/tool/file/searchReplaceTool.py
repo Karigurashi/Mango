@@ -71,8 +71,9 @@ class SearchReplaceTool(BaseTool):
                     return ToolResult.Fail(
                         f"replacements[{i}] must be an object", toolName=self.name
                     )
-                original = rep.get("original_text", "")
-                newText = rep.get("new_text", "")
+                # 兼容常见别名：old_str / old_text → original_text, new_str → new_text
+                original = rep.get("original_text") or rep.get("old_str") or rep.get("old_text") or ""
+                newText = rep.get("new_text") or rep.get("new_str") or ""
                 replaceAll = rep.get("replace_all", False)
 
                 if not original:
